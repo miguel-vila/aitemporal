@@ -3,15 +3,32 @@ import yt_dlp
 from pydantic import BaseModel
 import os
 from pinecone import Pinecone
+from pinecone.db_data import Index
 from sentence_transformers import SentenceTransformer
 import torch
-from typing import List, Dict
+from typing import Any, List, Dict
 import re
+import asyncio
 
-def get_embedding(transcript: str):
-    return model.encode(
-        transcript
-    ).tolist()
+import psutil, tracemalloc
+from pympler import muppy, summary
+
+proc = psutil.Process(os.getpid())
+tracemalloc.start(25)  # keep 25 frames of stack for later
+
+def report(tag: str):
+    rss = proc.memory_info().rss / (1024**2)
+    objs = muppy.get_objects()
+    sum1 = summary.summarize(objs) # type: ignore
+    # top = summary.format_(summary.sort(sum1, 'size'))[:10]
+    print(f"\n=== {tag} ===")
+    print(f"RSS: {rss:.1f} MiB  (pid={proc.pid})")
+    summary.print_(sum1) # type: ignore
+    # for line in top:
+    #     print(line)
+        
+def get_embedding(model: SentenceTransformer, transcript: str) -> List[float]:
+    return model.encode(transcript).tolist() # type: ignore
 
 class Video(BaseModel):
     id: str
@@ -19,7 +36,7 @@ class Video(BaseModel):
     url: str
     description: str
 
-ydl_opts = {
+ydl_opts: dict[str, Any] = {
     "quiet": True,
     "extract_flat": True,   # don't download, just get metadata
     "skip_download": True,
@@ -41,23 +58,24 @@ def clean_description(description: str) -> str:
             description = description.split(segment)[0]
     return description.strip()
 
-def get_full_description(ydl: yt_dlp.YoutubeDL, video_url: str) -> str:
-    video_info = ydl.extract_info(video_url, download=False)
+async def get_full_description(ydl: yt_dlp.YoutubeDL, video_url: str) -> str:
+    video_info = await asyncio.to_thread(ydl.extract_info, url= video_url, download=False)
     return video_info.get('description', '')
 
-def download_videos_info() -> list[Video]:
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        channel_info = ydl.extract_info(channel_url, download=False)
-        output = []
-        for entry in channel_info['entries']:
-            video_id = entry['id']
-            title = entry['title']
-            url = entry['url']
-            description = clean_description(get_full_description(ydl, url))
-            video = Video(id=video_id, title=title, url=url, description=description)
-            output.append(video)
-        return output
+async def channel_entry_to_video(ydl: yt_dlp.YoutubeDL, entry: Dict[str, Any]) -> Video:
+    video_id = entry['id']
+    print(f'processing {video_id}')
+    title = entry['title']
+    url = entry['url']
+    description = clean_description(await get_full_description(ydl, url))
+    video = Video(id=video_id, title=title, url=url, description=description)
+    print(f'processed {video_id}')
+    return video
 
+async def download_videos_info(channel_url: str) -> list[Video]:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
+        channel_info = ydl.extract_info(channel_url, download=False)
+        return await asyncio.gather(*[channel_entry_to_video(ydl, entry) for entry in channel_info['entries']]) # type: ignore
 
 def split_spanish_sentences(text: str) -> List[str]:
     # Lightweight Spanish sentence splitter (works well enough for transcripts).
@@ -75,8 +93,9 @@ def chunk_by_sentences(
     max_chars: int = 1400,   # soft cap to avoid giant chunks when sentences are long
 ) -> List[str]:
     sents = split_spanish_sentences(text)
-    chunks = []
-    buf, buf_len, start_idx = [], 0, 0
+    chunks : List[str] = []
+    buf: List[str] = []
+    buf_len = 0
 
     i = 0
     while i < len(sents):
@@ -107,7 +126,7 @@ def chunk_by_sentences(
 
     return chunks
 
-def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[any], video: Video) -> tuple[str, List[any], Dict]:
+def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[float], video: Video) -> tuple[str, List[float], Dict[str, Any]]:
     return (
         f'{video.id}_chunk{i}',
         embedding,
@@ -121,14 +140,15 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[any], vid
         }
     )
 
-def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, index: pc.Index):
+def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: Index):
     transcript = ytt_api.fetch(video.id, languages = ["es"])
     transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
     chunks = chunk_by_sentences(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
-    index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(chunk), video) for i, chunk in enumerate(chunks) ])
+    index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(model, chunk), video) for i, chunk in enumerate(chunks) ]) # type: ignore
 
-if __name__ == "__main__":
+async def main():
+    report('baseline')
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
     model = SentenceTransformer(embedding_model, device=device)
@@ -136,10 +156,16 @@ if __name__ == "__main__":
     index_name = 'atemporal-transcripts'
     ytt_api = YouTubeTranscriptApi()
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
+    report('initialized')
 
-    videos = download_videos_info()
+    videos = await download_videos_info(channel_url)
     print(f"Found {len(videos)} videos.")
-    index = pc.Index(index_name)
+    index: Index = pc.Index(index_name) # type: ignore
+    report('baseline before videos')
     for video in videos:
-        insert_video(video, ytt_api, index)
+        insert_video(video, ytt_api, model, index)
+        report(f'after {video.id}')
     print('Done upserting!')
+
+if __name__ == "__main__":
+    asyncio.run(main())

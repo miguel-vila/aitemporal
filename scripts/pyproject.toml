@@ -6,11 +6,15 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "jupyter>=1.1.1",
+    "memory-profiler>=0.61.0",
+    "objgraph>=3.6.2",
     "openai>=1.106.1",
     "pinecone>=7.3.0",
     "psutil>=6.1.0",
     "pydantic>=2.11.7",
+    "pympler>=1.1",
     "sentence-transformers>=5.1.0",
+    "types-yt-dlp>=2025.9.5.20250907",
     "youtube-transcript-api>=1.2.2",
     "yt-dlp>=2025.9.5",
 ]
