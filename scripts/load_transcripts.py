@@ -58,16 +58,18 @@ def clean_description(description: str) -> str:
             description = description.split(segment)[0]
     return description.strip()
 
-async def get_full_description(ydl: yt_dlp.YoutubeDL, video_url: str) -> str:
-    video_info = await asyncio.to_thread(ydl.extract_info, url= video_url, download=False)
-    return video_info.get('description', '')
+async def get_full_description(video_url: str) -> str:
+    # a new client to avoid synchronization locks. YoutubeDL is not thread-safe
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
+        video_info = await asyncio.to_thread(ydl.extract_info, url= video_url, download=False)
+        return video_info.get('description', '')
 
-async def channel_entry_to_video(ydl: yt_dlp.YoutubeDL, entry: Dict[str, Any]) -> Video:
+async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
     video_id = entry['id']
     print(f'processing {video_id}')
     title = entry['title']
     url = entry['url']
-    description = clean_description(await get_full_description(ydl, url))
+    description = clean_description(await get_full_description(url))
     video = Video(id=video_id, title=title, url=url, description=description)
     print(f'processed {video_id}')
     return video
@@ -75,7 +77,7 @@ async def channel_entry_to_video(ydl: yt_dlp.YoutubeDL, entry: Dict[str, Any]) -
 async def download_videos_info(channel_url: str) -> list[Video]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
         channel_info = ydl.extract_info(channel_url, download=False)
-        return await asyncio.gather(*[channel_entry_to_video(ydl, entry) for entry in channel_info['entries']]) # type: ignore
+        return await asyncio.gather(*[channel_entry_to_video(entry) for entry in channel_info['entries']]) # type: ignore
 
 def split_spanish_sentences(text: str) -> List[str]:
     # Lightweight Spanish sentence splitter (works well enough for transcripts).
