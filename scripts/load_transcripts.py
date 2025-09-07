@@ -8,18 +8,9 @@ import torch
 from typing import List, Dict
 import re
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
-model = SentenceTransformer(embedding_model, device=device)
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"), )
-index_name = 'atemporal-transcripts'
-ytt_api = YouTubeTranscriptApi()
-channel_url='https://www.youtube.com/@atemporalpodcast/videos'
-
 def get_embedding(transcript: str):
     return model.encode(
-        transcript,
-        convert_to_numpy=True,
+        transcript
     ).tolist()
 
 class Video(BaseModel):
@@ -130,14 +121,25 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[any], vid
         }
     )
 
+def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, index: pc.Index):
+    transcript = ytt_api.fetch(video.id, languages = ["es"])
+    transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
+    chunks = chunk_by_sentences(transcript_text)
+    print(f'Split video {video.id} in {len(chunks)} chunks')
+    index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(chunk), video) for i, chunk in enumerate(chunks) ])
+
 if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+    model = SentenceTransformer(embedding_model, device=device)
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"), )
+    index_name = 'atemporal-transcripts'
+    ytt_api = YouTubeTranscriptApi()
+    channel_url='https://www.youtube.com/@atemporalpodcast/videos'
+
     videos = download_videos_info()
     print(f"Found {len(videos)} videos.")
     index = pc.Index(index_name)
     for video in videos:
-        transcript = ytt_api.fetch(video.id, languages = ["es"])
-        transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
-        chunks = chunk_by_sentences(transcript_text)
-        print(f'Split video in {len(chunks)} chunks')
-        index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(chunk), video) for i, chunk in enumerate(chunks) ])
+        insert_video(video, ytt_api, index)
     print('Done upserting!')

@@ -8,6 +8,7 @@ dependencies = [
     "jupyter>=1.1.1",
     "openai>=1.106.1",
     "pinecone>=7.3.0",
+    "psutil>=6.1.0",
     "pydantic>=2.11.7",
     "sentence-transformers>=5.1.0",
     "youtube-transcript-api>=1.2.2",
