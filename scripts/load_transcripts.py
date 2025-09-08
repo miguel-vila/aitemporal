@@ -17,13 +17,14 @@ import threading
 from pathlib import Path
 
 debug = False
+debug_memory = True
 
 proc = psutil.Process(os.getpid())
 tracemalloc.start(25)  # keep 25 frames of stack for later
 
 def report(tag: str):
-    global debug
-    if debug:
+    global debug_memory
+    if debug_memory:
         rss = proc.memory_info().rss / (1024**2)
         objs = muppy.get_objects()
         sum1 = summary.summarize(objs) # type: ignore
@@ -64,9 +65,9 @@ def load_description_cache() -> None:
             reader = csv.DictReader(f)
             for row in reader:
                 description_cache[row['id']] = row['description']
-        print(f"Loaded {len(description_cache)} cached descriptions")
+        print_debug(f"Loaded {len(description_cache)} cached descriptions")
     else:
-        print("No existing cache file found, starting fresh")
+        print_debug("No existing cache file found, starting fresh")
 
 def save_description_to_cache(video_id: str, description: str) -> None:
     """Thread-safely append a new description to the CSV cache"""
@@ -222,13 +223,13 @@ async def main():
     report('initialized')
 
     videos = await download_videos_info(channel_url)
-    print(f"Found {len(videos)} videos.")
+    print_debug(f"Found {len(videos)} videos.")
     index: Index = pc.Index(index_name) # type: ignore
     report('baseline before videos')
     for video in videos:
         insert_video(video, ytt_api, model, index)
         report(f'after {video.id}')
-    print('Done upserting!')
+    print_debug('Done upserting!')
 
 if __name__ == "__main__":
     asyncio.run(main())
