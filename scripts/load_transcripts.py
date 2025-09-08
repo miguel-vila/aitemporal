@@ -12,20 +12,27 @@ import asyncio
 
 import psutil, tracemalloc
 from pympler import muppy, summary
+import csv
+import threading
+from pathlib import Path
+
+debug = False
 
 proc = psutil.Process(os.getpid())
 tracemalloc.start(25)  # keep 25 frames of stack for later
 
 def report(tag: str):
-    rss = proc.memory_info().rss / (1024**2)
-    objs = muppy.get_objects()
-    sum1 = summary.summarize(objs) # type: ignore
-    # top = summary.format_(summary.sort(sum1, 'size'))[:10]
-    print(f"\n=== {tag} ===")
-    print(f"RSS: {rss:.1f} MiB  (pid={proc.pid})")
-    summary.print_(sum1) # type: ignore
-    # for line in top:
-    #     print(line)
+    global debug
+    if debug:
+        rss = proc.memory_info().rss / (1024**2)
+        objs = muppy.get_objects()
+        sum1 = summary.summarize(objs) # type: ignore
+        # top = summary.format_(summary.sort(sum1, 'size'))[:10]
+        print(f"\n=== {tag} ===")
+        print(f"RSS: {rss:.1f} MiB  (pid={proc.pid})")
+        summary.print_(sum1) # type: ignore
+        # for line in top:
+        #     print(line)
         
 def get_embedding(model: SentenceTransformer, transcript: str) -> List[float]:
     return model.encode(transcript).tolist() # type: ignore
@@ -43,6 +50,40 @@ ydl_opts: dict[str, Any] = {
     "no_warnings": True,
 }
 
+# Global cache and lock for thread-safe operations
+description_cache: Dict[str, str] = {}
+cache_lock = threading.Lock()
+CACHE_FILE = "video_descriptions_cache.csv"
+
+def load_description_cache() -> None:
+    """Load existing descriptions from CSV cache file"""
+    global description_cache
+    cache_path = Path(CACHE_FILE)
+    if cache_path.exists():
+        with open(cache_path, 'r', encoding='utf-8', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                description_cache[row['id']] = row['description']
+        print(f"Loaded {len(description_cache)} cached descriptions")
+    else:
+        print("No existing cache file found, starting fresh")
+
+def save_description_to_cache(video_id: str, description: str) -> None:
+    """Thread-safely append a new description to the CSV cache"""
+    with cache_lock:
+        # Add to in-memory cache
+        description_cache[video_id] = description
+        
+        # Append to file
+        cache_path = Path(CACHE_FILE)
+        file_exists = cache_path.exists()
+        
+        with open(cache_path, 'a', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['id', 'description'])
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({'id': video_id, 'description': description})
+
 def clean_description(description: str) -> str:
     segments = [
         'Capítulos',
@@ -58,20 +99,36 @@ def clean_description(description: str) -> str:
             description = description.split(segment)[0]
     return description.strip()
 
-async def get_full_description(video_url: str) -> str:
+def print_debug(msg: str):
+    global debug
+    if debug:
+        print(msg)
+
+async def get_full_description(video_id: str, video_url: str) -> str:
+    """Get video description with caching support"""
+    # Check cache first
+    if video_id in description_cache:
+        print_debug(f"Cache hit for video {video_id}")
+        return description_cache[video_id]
+    
+    print_debug(f"Cache miss for video {video_id}, fetching from API")
     # a new client to avoid synchronization locks. YoutubeDL is not thread-safe
     with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
-        video_info = await asyncio.to_thread(ydl.extract_info, url= video_url, download=False)
-        return video_info.get('description', '')
+        video_info = await asyncio.to_thread(ydl.extract_info, url=video_url, download=False)
+        description = video_info.get('description', '')
+        
+        # Save to cache
+        save_description_to_cache(video_id, description)
+        return description
 
 async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
     video_id = entry['id']
-    print(f'processing {video_id}')
+    print_debug(f'processing {video_id}')
     title = entry['title']
     url = entry['url']
-    description = clean_description(await get_full_description(url))
+    description = clean_description(await get_full_description(video_id, url))
     video = Video(id=video_id, title=title, url=url, description=description)
-    print(f'processed {video_id}')
+    print_debug(f'processed {video_id}')
     return video
 
 async def download_videos_info(channel_url: str) -> list[Video]:
@@ -146,15 +203,19 @@ def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTra
     transcript = ytt_api.fetch(video.id, languages = ["es"])
     transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
     chunks = chunk_by_sentences(transcript_text)
-    print(f'Split video {video.id} in {len(chunks)} chunks')
+    print_debug(f'Split video {video.id} in {len(chunks)} chunks')
     index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(model, chunk), video) for i, chunk in enumerate(chunks) ]) # type: ignore
 
 async def main():
     report('baseline')
+    
+    # Load description cache before processing
+    load_description_cache()
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
     model = SentenceTransformer(embedding_model, device=device)
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"), )
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     index_name = 'atemporal-transcripts'
     ytt_api = YouTubeTranscriptApi()
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
