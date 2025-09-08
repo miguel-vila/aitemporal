@@ -22,7 +22,7 @@ debug_memory = True
 proc = psutil.Process(os.getpid())
 tracemalloc.start(25)  # keep 25 frames of stack for later
 
-def report(tag: str):
+def report_mem(tag: str):
     global debug_memory
     if debug_memory:
         rss = proc.memory_info().rss / (1024**2)
@@ -208,7 +208,7 @@ def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTra
     index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(model, chunk), video) for i, chunk in enumerate(chunks) ]) # type: ignore
 
 async def main():
-    report('baseline')
+    report_mem('baseline')
     
     # Load description cache before processing
     load_description_cache()
@@ -220,15 +220,15 @@ async def main():
     index_name = 'atemporal-transcripts'
     ytt_api = YouTubeTranscriptApi()
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
-    report('initialized')
+    report_mem('initialized')
 
     videos = await download_videos_info(channel_url)
     print_debug(f"Found {len(videos)} videos.")
     index: Index = pc.Index(index_name) # type: ignore
-    report('baseline before videos')
+    report_mem('baseline before videos')
     for video in videos:
         insert_video(video, ytt_api, model, index)
-        report(f'after {video.id}')
+        report_mem(f'after {video.id}')
     print_debug('Done upserting!')
 
 if __name__ == "__main__":
