@@ -2,8 +2,8 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
 from pydantic import BaseModel
 import os
-from pinecone import Pinecone
-from pinecone.db_data import Index
+from pinecone import PineconeAsyncio
+from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
 from typing import Any, List, Dict
@@ -17,10 +17,12 @@ import threading
 from pathlib import Path
 
 debug = False
-debug_memory = True
+debug_memory = False
 
 proc = psutil.Process(os.getpid())
 tracemalloc.start(25)  # keep 25 frames of stack for later
+
+model_semaphore = asyncio.Semaphore(1)
 
 def report_mem(tag: str):
     global debug_memory
@@ -35,12 +37,19 @@ def report_mem(tag: str):
         # for line in top:
         #     print(line)
         
-def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> List[List[float]]:
-    return model.encode( # type: ignore
-        transcripts, 
-        normalize_embeddings=True, # important for cosine similarity
-        batch_size=512 # good for CPU with 8-16GB RAM
-    ).tolist()
+async def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> List[List[float]]:
+    global model_semaphore
+    async with model_semaphore:
+        loop = asyncio.get_running_loop()
+        # Run encode in a thread to avoid blocking event loop
+        embeddings = loop.run_in_executor( # type: ignore
+            None, 
+            model.encode,  # type: ignore
+            sentences = transcripts,  # type: ignore
+            normalize_embeddings = True, # important for cosine similarity # type: ignore
+            batch_size = 512 # good for CPU with 8-16GB RAM # type: ignore
+        )
+        return embeddings.tolist() # type: ignore
 
 class Video(BaseModel):
     id: str
@@ -182,17 +191,21 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[float], v
         }
     )
 
-def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: Index):
+async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
     transcript = ytt_api.fetch(video.id, languages = ["es"])
     transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
     chunks = chunk_by_sentences(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
-    embeddings = get_embedding(model, chunks)
+    embeddings = await get_embedding(model, chunks)
     videos_with_embeddings = [
         wrap_video_with_embedding(i, chunk, embedding, video)
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
-    index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
+    await index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
+
+async def insert_video_and_report(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
+    await insert_video(video, ytt_api, model, index)
+    report_mem(f'after {video.id}')
 
 async def main():
     report_mem('baseline')
@@ -203,20 +216,20 @@ async def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
     model = SentenceTransformer(embedding_model, device=device)
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-    index_name = 'atemporal-transcripts'
+    index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
     ytt_api = YouTubeTranscriptApi()
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
 
     videos = await download_videos_info(channel_url)
     print_debug(f"Found {len(videos)} videos.")
-    index: Index = pc.Index(index_name) # type: ignore
-    report_mem('baseline before videos')
-    for video in videos:
-        insert_video(video, ytt_api, model, index)
-        report_mem(f'after {video.id}')
-    print_debug('Done upserting!')
+    async with PineconeAsyncio(api_key=os.getenv("PINECONE_API_KEY")) as pc:
+        index: IndexAsyncio = pc.IndexAsyncio(host=index_host) # type: ignore
+        report_mem('baseline before videos')
+        await asyncio.gather(
+            *[insert_video_and_report(video, ytt_api, model, index) for video in videos]
+        )
+        print_debug('Done upserting!')
 
 if __name__ == "__main__":
     asyncio.run(main())
