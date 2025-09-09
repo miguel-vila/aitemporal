@@ -11,6 +11,7 @@ dependencies = [
     "openai>=1.106.1",
     "pinecone>=7.3.0",
     "psutil>=6.1.0",
+    "py-spy>=0.4.1",
     "pydantic>=2.11.7",
     "pympler>=1.1",
     "sentence-transformers>=5.1.0",

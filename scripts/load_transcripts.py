@@ -35,8 +35,12 @@ def report_mem(tag: str):
         # for line in top:
         #     print(line)
         
-def get_embedding(model: SentenceTransformer, transcript: str) -> List[float]:
-    return model.encode(transcript).tolist() # type: ignore
+def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> List[List[float]]:
+    return model.encode( # type: ignore
+        transcripts, 
+        normalize_embeddings=True, # important for cosine similarity
+        batch_size=512 # good for CPU with 8-16GB RAM
+    ).tolist()
 
 class Video(BaseModel):
     id: str
@@ -148,41 +152,19 @@ def split_spanish_sentences(text: str) -> List[str]:
 
 def chunk_by_sentences(
     text: str,
-    target_chars: int = 1000,
+    max_chars_log: int = 1500,
     overlap_sents: int = 2,
-    max_chars: int = 1400,   # soft cap to avoid giant chunks when sentences are long
+    # max_chars: int = 1400,   # soft cap to avoid giant chunks when sentences are long
 ) -> List[str]:
     sents = split_spanish_sentences(text)
+    print(f'split in {len(sents)} sentences')
     chunks : List[str] = []
-    buf: List[str] = []
-    buf_len = 0
 
-    i = 0
-    while i < len(sents):
-        s = sents[i]
-        add_len = len(s) + (1 if buf else 0)  # +1 for space
-        if buf and (buf_len + add_len > max_chars) and buf_len >= target_chars:
-            # flush chunk
-            chunk_text = " ".join(buf)
-            chunks.append(chunk_text)
-            # prepare overlap
-            overlap = buf[-overlap_sents:] if overlap_sents > 0 else []
-            buf = overlap[:]  # start next chunk with overlap
-            buf_len = len(" ".join(buf)) if buf else 0
-            # do not advance i here; we’ll attempt to add s again
-        else:
-            # add sentence and advance
-            if buf:
-                buf.append(s)
-                buf_len += add_len
-            else:
-                buf = [s]
-                buf_len = len(s)
-            i += 1
-
-    # flush remainder
-    if buf:
-        chunks.append(" ".join(buf))
+    for i in range(overlap_sents, len(sents)):
+        chunk = ' '.join(sents[i-overlap_sents:i])
+        if len(chunk) > max_chars_log:
+            print(f'chunk with {len(chunk)} chars')
+        chunks.append(chunk)            
 
     return chunks
 
@@ -204,8 +186,13 @@ def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTra
     transcript = ytt_api.fetch(video.id, languages = ["es"])
     transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
     chunks = chunk_by_sentences(transcript_text)
-    print_debug(f'Split video {video.id} in {len(chunks)} chunks')
-    index.upsert([ wrap_video_with_embedding(i, chunk, get_embedding(model, chunk), video) for i, chunk in enumerate(chunks) ]) # type: ignore
+    print(f'Split video {video.id} in {len(chunks)} chunks')
+    embeddings = get_embedding(model, chunks)
+    videos_with_embeddings = [
+        wrap_video_with_embedding(i, chunk, embedding, video)
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+    ]
+    index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
 
 async def main():
     report_mem('baseline')
