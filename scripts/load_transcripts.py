@@ -1,4 +1,5 @@
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, FetchedTranscript
+from youtube_transcript_api.proxies import WebshareProxyConfig
 import yt_dlp
 from pydantic import BaseModel
 import os
@@ -39,6 +40,7 @@ def report_mem(tag: str):
         
 async def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> List[List[float]]:
     global model_semaphore
+    # model.encode is not thread-safe, so we limit concurrency to 1
     async with model_semaphore:
         loop = asyncio.get_running_loop()
         # Run encode in a thread to avoid blocking event loop
@@ -191,9 +193,19 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[float], v
         }
     )
 
+transcript_fetch_semaphore = asyncio.Semaphore(25)
+
 async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
-    transcript = ytt_api.fetch(video.id, languages = ["es"])
-    transcript_text = ' '.join([snippet.text for snippet in transcript.snippets])
+    global transcript_fetch_semaphore
+    async with transcript_fetch_semaphore:
+        loop = asyncio.get_running_loop()
+        transcript: FetchedTranscript = loop.run_in_executor( # type: ignore
+            None,
+            ytt_api.fetch,
+            video.id, # type: ignore
+            ["es"] # type: ignore
+        )
+    transcript_text = ' '.join([snippet.text for snippet in transcript.snippets]) # type: ignore
     chunks = chunk_by_sentences(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
     embeddings = await get_embedding(model, chunks)
@@ -217,7 +229,14 @@ async def main():
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
     model = SentenceTransformer(embedding_model, device=device)
     index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
-    ytt_api = YouTubeTranscriptApi()
+    print("using webshare proxy username:", os.getenv("WEBSHARE_PROXY_USERNAME"))
+    print("using webshare proxy password:", os.getenv("WEBSHARE_PROXY_PASSWORD"))
+    ytt_api = YouTubeTranscriptApi(
+        proxy_config=WebshareProxyConfig(
+            proxy_username=os.getenv("WEBSHARE_PROXY_USERNAME"), # type: ignore
+            proxy_password=os.getenv("WEBSHARE_PROXY_PASSWORD"), # type: ignore
+        )
+    )
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
 
