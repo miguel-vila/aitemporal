@@ -16,8 +16,9 @@ from pympler import muppy, summary
 import csv
 import threading
 from pathlib import Path
+from transcript_db import TranscriptDB, VideoRecord
 
-debug = False
+debug = True
 debug_memory = False
 
 proc = psutil.Process(os.getpid())
@@ -58,6 +59,7 @@ class Video(BaseModel):
     title: str
     url: str
     description: str
+    transcript: str | None
 
 ydl_opts: dict[str, Any] = {
     "quiet": True,
@@ -66,39 +68,8 @@ ydl_opts: dict[str, Any] = {
     "no_warnings": True,
 }
 
-# Global cache and lock for thread-safe operations
-description_cache: Dict[str, str] = {}
-cache_lock = threading.Lock()
-CACHE_FILE = "video_descriptions_cache.csv"
-
-def load_description_cache() -> None:
-    """Load existing descriptions from CSV cache file"""
-    global description_cache
-    cache_path = Path(CACHE_FILE)
-    if cache_path.exists():
-        with open(cache_path, 'r', encoding='utf-8', newline='') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                description_cache[row['id']] = row['description']
-        print_debug(f"Loaded {len(description_cache)} cached descriptions")
-    else:
-        print_debug("No existing cache file found, starting fresh")
-
-def save_description_to_cache(video_id: str, description: str) -> None:
-    """Thread-safely append a new description to the CSV cache"""
-    with cache_lock:
-        # Add to in-memory cache
-        description_cache[video_id] = description
-        
-        # Append to file
-        cache_path = Path(CACHE_FILE)
-        file_exists = cache_path.exists()
-        
-        with open(cache_path, 'a', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['id', 'description'])
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow({'id': video_id, 'description': description})
+# Global database instance
+transcript_db: TranscriptDB = TranscriptDB()
 
 def clean_description(description: str) -> str:
     segments = [
@@ -120,12 +91,13 @@ def print_debug(msg: str):
     if debug:
         print(msg)
 
-async def get_full_description(video_id: str, video_url: str) -> str:
-    """Get video description with caching support"""
+async def get_full_description(video_id: str, video_url: str, title: str) -> str:
+    """Get video description with SQLite caching support"""
     # Check cache first
-    if video_id in description_cache:
+    cached_description = await transcript_db.get_description(video_id)
+    if cached_description:
         print_debug(f"Cache hit for video {video_id}")
-        return description_cache[video_id]
+        return cached_description
     
     print_debug(f"Cache miss for video {video_id}, fetching from API")
     # a new client to avoid synchronization locks. YoutubeDL is not thread-safe
@@ -133,17 +105,32 @@ async def get_full_description(video_id: str, video_url: str) -> str:
         video_info = await asyncio.to_thread(ydl.extract_info, url=video_url, download=False)
         description = video_info.get('description', '')
         
-        # Save to cache
-        save_description_to_cache(video_id, description)
         return description
 
 async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
     video_id = entry['id']
     print_debug(f'processing {video_id}')
+    cached_video = await transcript_db.get_video(video_id)
+    if cached_video:
+        return Video(
+            id=cached_video.id,
+            title=cached_video.title,
+            url=cached_video.url,
+            description=cached_video.description or '',
+            transcript=cached_video.transcript
+        )
     title = entry['title']
     url = entry['url']
-    description = clean_description(await get_full_description(video_id, url))
-    video = Video(id=video_id, title=title, url=url, description=description)
+    description = clean_description(await get_full_description(video_id, url, title))
+    video = Video(id=video_id, title=title, url=url, description=description, transcript=None)
+    await transcript_db.upsert_video(VideoRecord(
+        id=video.id,
+        title=video.title,
+        url=video.url,
+        description=video.description,
+        processed=False,
+        transcript=None
+    ))
     print_debug(f'processed {video_id}')
     return video
 
@@ -193,19 +180,36 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[float], v
         }
     )
 
-transcript_fetch_semaphore = asyncio.Semaphore(25)
+transcript_fetch_semaphore = asyncio.Semaphore(2)
 
-async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
+async def get_transcript_text(video_id: str, ytt_api: YouTubeTranscriptApi, cached_video: VideoRecord | None) -> str:
     global transcript_fetch_semaphore
+    if cached_video and cached_video.transcript:
+        print_debug(f"Transcript cache hit for video {video_id}")
+        return cached_video.transcript
     async with transcript_fetch_semaphore:
         loop = asyncio.get_running_loop()
-        transcript: FetchedTranscript = loop.run_in_executor( # type: ignore
+        transcript: FetchedTranscript = await loop.run_in_executor( # type: ignore
             None,
             ytt_api.fetch,
-            video.id, # type: ignore
+            video_id, # type: ignore
             ["es"] # type: ignore
         )
+    
     transcript_text = ' '.join([snippet.text for snippet in transcript.snippets]) # type: ignore
+    # Cache the transcript
+    await transcript_db.cache_transcript(video_id, transcript_text)
+    return transcript_text
+
+async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):    
+    # Check if video is already processed
+    cached_video = await transcript_db.get_video(video.id)
+    if cached_video and cached_video.processed:
+        print_debug(f"Video {video.id} already processed, skipping")
+        return
+    
+    transcript_text = await get_transcript_text(video.id, ytt_api, cached_video)
+            
     chunks = chunk_by_sentences(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
     embeddings = await get_embedding(model, chunks)
@@ -214,6 +218,9 @@ async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: Sente
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
     await index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
+    
+    # Mark as processed
+    await transcript_db.mark_processed(video.id)
 
 async def insert_video_and_report(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
     await insert_video(video, ytt_api, model, index)
@@ -222,8 +229,10 @@ async def insert_video_and_report(video: Video, ytt_api: YouTubeTranscriptApi, m
 async def main():
     report_mem('baseline')
     
-    # Load description cache before processing
-    load_description_cache()
+    # Initialize database
+    await transcript_db.initialize()
+    stats = await transcript_db.get_stats()
+    print(f"Database stats: {stats}")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
