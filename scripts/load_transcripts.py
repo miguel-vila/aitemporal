@@ -10,6 +10,7 @@ import torch
 from typing import Any, List, Dict
 import re
 import asyncio
+import functools
 
 import psutil, tracemalloc
 from pympler import muppy, summary
@@ -45,12 +46,15 @@ async def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> L
     async with model_semaphore:
         loop = asyncio.get_running_loop()
         # Run encode in a thread to avoid blocking event loop
-        embeddings = loop.run_in_executor( # type: ignore
+        encode_partial = functools.partial(
+            model.encode, 
+            sentences = transcripts,
+            normalize_embeddings = True, # important for cosine similarity
+            batch_size = 512 # good for CPU with 8-16GB RAM
+        )
+        embeddings = await loop.run_in_executor( # type: ignore
             None, 
-            model.encode,  # type: ignore
-            sentences = transcripts,  # type: ignore
-            normalize_embeddings = True, # important for cosine similarity # type: ignore
-            batch_size = 512 # good for CPU with 8-16GB RAM # type: ignore
+            encode_partial
         )
         return embeddings.tolist() # type: ignore
 
@@ -212,6 +216,9 @@ async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: Sente
             
     chunks = chunk_by_sentences(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
+    if(len(chunks) == 0):
+        print(f'Video {video.id} has no chunks. length={len(transcript_text)}.')
+        print(f'Transcript text: {transcript_text[:200]}...{transcript_text[-200:]}')
     embeddings = await get_embedding(model, chunks)
     videos_with_embeddings = [
         wrap_video_with_embedding(i, chunk, embedding, video)
@@ -241,10 +248,10 @@ async def main():
     print("using webshare proxy username:", os.getenv("WEBSHARE_PROXY_USERNAME"))
     print("using webshare proxy password:", os.getenv("WEBSHARE_PROXY_PASSWORD"))
     ytt_api = YouTubeTranscriptApi(
-        proxy_config=WebshareProxyConfig(
-            proxy_username=os.getenv("WEBSHARE_PROXY_USERNAME"), # type: ignore
-            proxy_password=os.getenv("WEBSHARE_PROXY_PASSWORD"), # type: ignore
-        )
+        # proxy_config=WebshareProxyConfig(
+        #     proxy_username=os.getenv("WEBSHARE_PROXY_USERNAME"), # type: ignore
+        #     proxy_password=os.getenv("WEBSHARE_PROXY_PASSWORD"), # type: ignore
+        # )
     )
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
