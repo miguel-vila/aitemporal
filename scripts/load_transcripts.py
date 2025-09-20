@@ -257,7 +257,15 @@ async def download_audio(video_id: str, video_url: str) -> str:
         'outtmpl': f'./audio/{video_id}.%(ext)s',
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': 60, # 1 minute timeout
+        'http_chunk_size': 10485760,  # 10MB chunks
     }
+
+    # Add proxy configuration if webshare env vars are available
+    webshare_username = os.getenv("WEBSHARE_PROXY_USERNAME")
+    webshare_password = os.getenv("WEBSHARE_PROXY_PASSWORD")
+    if webshare_username and webshare_password:
+        ydl_opts['proxy'] = f'http://{webshare_username}-1:{webshare_password}@p.webshare.io:80'
 
     loop = asyncio.get_running_loop()
 
@@ -282,7 +290,14 @@ async def download_audio(video_id: str, video_url: str) -> str:
                 # If conversion fails, rename the original file
                 os.rename(downloaded_file, audio_path)
 
-    await loop.run_in_executor(None, download_and_convert)
+    try:
+      await asyncio.wait_for(
+          loop.run_in_executor(None, download_and_convert),
+          timeout=600  # 10 minutes
+      )
+    except asyncio.TimeoutError:
+        print(f"Download timeout for video {video_id}")
+        raise
     return audio_path
 
 async def get_diarized_transcript(video_id: str, video_url: str, cached_video: VideoRecord | None) -> str:
@@ -383,7 +398,6 @@ async def main():
     model = SentenceTransformer(embedding_model, device=device)
     index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
     print("using webshare proxy username:", os.getenv("WEBSHARE_PROXY_USERNAME"))
-    print("using webshare proxy password:", os.getenv("WEBSHARE_PROXY_PASSWORD"))
     ytt_api = YouTubeTranscriptApi(
         proxy_config=WebshareProxyConfig(
             proxy_username=os.getenv("WEBSHARE_PROXY_USERNAME"), # type: ignore
