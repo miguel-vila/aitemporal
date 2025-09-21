@@ -18,6 +18,7 @@ import psutil
 import tracemalloc
 from pympler import muppy, summary
 from transcript_db import TranscriptDB, VideoRecord
+from name_recognition import extract_names
 
 debug = True
 debug_memory = False
@@ -296,7 +297,7 @@ async def download_audio(video_id: str, video_url: str) -> str:
         raise
     return audio_path
 
-async def get_diarized_transcript(video_id: str, video_url: str, cached_video: VideoRecord | None) -> str:
+async def get_diarized_transcript(video_id: str, video_url: str, interviewer_name: str, interviewee_name: str, cached_video: VideoRecord | None) -> str:
     """Get diarized transcript using Whisper + pyannote.audio"""
     global diarization_semaphore
 
@@ -320,14 +321,30 @@ async def get_diarized_transcript(video_id: str, video_url: str, cached_video: V
         transcript_text = await transcribe_and_diarize_audio(audio_path, video_id)
         return transcript_text
 
+video_titles_to_skip = [
+    "M.U.T" # not an interview episode
+]
+
 async def insert_video(video: Video, model: SentenceTransformer, index: IndexAsyncio):
+    if video.title in video_titles_to_skip:
+        print_debug(f"Skipping video {video.id}")
+        return
     # Check if video is already processed
     cached_video = await transcript_db.get_video(video.id)
     if cached_video and cached_video.processed:
         print_debug(f"Video {video.id} already processed, skipping")
         return
+    
+    recognized_names = extract_names(video.title)
+    if len(recognized_names) == 0:
+        raise Exception("Didn't recognize any name in title:", video.title)
+    if len(recognized_names) > 1:
+        raise Exception("Too many names recognized in title:", video.title, recognized_names)
+    
+    interviewer_name = "Andrés Acevedo"
+    interviewee_name = recognized_names[0]
 
-    transcript_text = await get_diarized_transcript(video.id, video.url, cached_video)
+    transcript_text = await get_diarized_transcript(video.id, video.url, interviewer_name, interviewee_name, cached_video)
             
     chunks = chunk_diarized_text(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')

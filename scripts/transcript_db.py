@@ -198,10 +198,7 @@ class TranscriptDB:
             cursor = await db.execute(
                 """SELECT id, title, url, description, transcription_tiny, transcription_base,
                    transcription_small, transcription_medium, transcription_large, transcription_turbo,
-                   processed, created_at, updated_at FROM videos WHERE processed = FALSE AND (
-                   transcription_tiny IS NOT NULL OR transcription_base IS NOT NULL OR
-                   transcription_small IS NOT NULL OR transcription_medium IS NOT NULL OR
-                   transcription_large IS NOT NULL OR transcription_turbo IS NOT NULL)"""
+                   processed, created_at, updated_at FROM videos WHERE processed = FALSE"""
             )
             rows = await cursor.fetchall()
 
