@@ -94,6 +94,8 @@ async def transcribe_with_model(audio_path: str, video_id: str, model_name: str)
     Returns:
         List of transcript segments
     """
+    # Override device for 'mps' to use 'cpu' because sparse not implemented for mps: https://github.com/pytorch/pytorch/issues/129842
+    transcription_device = torch.device("cpu") if device.type == 'mps' else device
 
     # Check database cache first
     cached_segments = await transcript_db.get_transcription(video_id, model_name)
@@ -101,10 +103,10 @@ async def transcribe_with_model(audio_path: str, video_id: str, model_name: str)
         print(f"Loading cached segments from database for model {model_name}")
         return json.loads(cached_segments)
 
-    print(f"Transcribing with Whisper model '{model_name}' on device: {device}")
+    print(f"Transcribing with Whisper model '{model_name}' on device: {transcription_device}")
 
     # Load Whisper model
-    whisper_model = whisper.load_model(model_name, device=device)
+    whisper_model = whisper.load_model(model_name, device=transcription_device)
 
     # Transcribe with Whisper
     result = whisper_model.transcribe(audio_path, language="es")
