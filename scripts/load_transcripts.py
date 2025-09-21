@@ -7,6 +7,7 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
+from audio_processing import transcribe_and_diarize_audio
 from typing import Any, List, Dict
 import asyncio
 import functools
@@ -309,17 +310,7 @@ async def get_diarized_transcript(video_id: str, video_url: str, cached_video: V
     async with diarization_semaphore:
         # Download audio
         audio_path = await download_audio(video_id, video_url)
-
-        loop = asyncio.get_running_loop()
-        
-        def _transcribe_and_diarize_audio():
-            from audio_processing import transcribe_and_diarize_audio
-            return transcribe_and_diarize_audio(audio_path)
-
-        transcript_text = await loop.run_in_executor(None, _transcribe_and_diarize_audio)
-
-        # Cache the transcript
-        await transcript_db.cache_transcript(video_id, transcript_text)
+        transcript_text = await transcribe_and_diarize_audio(audio_path, video_id)
         return transcript_text
 
 async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):

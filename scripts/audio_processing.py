@@ -8,7 +8,10 @@ import json
 import torch
 import whisper
 import os
+import asyncio
+from typing import List, Dict, Any
 from pyannote.audio import Pipeline
+from transcript_db import TranscriptDB
 
 os.environ['PYANNOTE_AUDIO_PROGRESS'] = '1'
 segments_model = "tiny"
@@ -19,17 +22,23 @@ elif torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
-def compare_models_segments(video_id: str) -> None:
+# Global database instance
+transcript_db = TranscriptDB()
+
+async def compare_models_segments(video_id: str) -> None:
     n = 10
     out = {}
     models = ["tiny", "base", "small", "medium", "large", "turbo"]
+    await transcript_db.initialize()
+
     for model in models:
-        if not os.path.exists(f'./audio/{video_id}.wav-segments-{model}.json'):
-            print(f"Segments file for model {model} not found, skipping...")
+        cached_segments = await transcript_db.get_transcription(video_id, model)
+        if not cached_segments:
+            print(f"Segments for model {model} not found, skipping...")
             continue
-        with open(f'./audio/{video_id}.wav-segments-{model}.json', 'r') as f:
-            segments = json.load(f)
-            out[model] = ' '.join([seg['text'] for seg in segments[:n]])
+        segments = json.loads(cached_segments)
+        out[model] = ' '.join([seg['text'] for seg in segments[:n]])
+
     for model in models:
         if model not in out:
             continue
@@ -37,26 +46,8 @@ def compare_models_segments(video_id: str) -> None:
         print(out[model])
         print("\n")
 
-def transcribe_and_diarize_audio(audio_path: str) -> str:
-    print(f"Processing audio file: {audio_path}. Running on device: {device}")
-    segments_filename = f'{audio_path}-segments-{segments_model}.json'
-    if os.path.exists(segments_filename):
-        print(f"Loading cached segments from {segments_filename}")
-        with open(segments_filename, 'r') as f:
-            segments = json.load(f)
-    else:
-        
-        # Load Whisper model
-        whisper_model = whisper.load_model(segments_model, device=device)
-        print(f"Whisper model '{segments_model}' loaded on device: {device}")
-
-        # Transcribe with Whisper
-        result = whisper_model.transcribe(audio_path, language="es")
-        print("Transcription completed for:", audio_path)
-        with open(segments_filename, 'w') as f:
-            json.dump(result["segments"], f)
-        segments = result["segments"]
-
+async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> str:
+    segments = await transcribe_with_model(audio_path, video_id, segments_model)
 
     # Load diarization pipeline
     diarization_pipeline = Pipeline.from_pretrained(
@@ -90,3 +81,39 @@ def transcribe_and_diarize_audio(audio_path: str) -> str:
         diarized_text.append(f"[{speaker}]: {text}")
 
     return "\n".join(diarized_text)
+
+async def transcribe_with_model(audio_path: str, video_id: str, model_name: str) -> List[Dict[str, Any]]:
+    """
+    Transcribe audio with a specific Whisper model and cache results in database.
+
+    Args:
+        audio_path: Path to the audio file
+        video_id: Video ID for caching
+        model_name: Whisper model name ("tiny", "base", "small", "medium", "large", "turbo")
+
+    Returns:
+        List of transcript segments
+    """
+
+    # Check database cache first
+    cached_segments = await transcript_db.get_transcription(video_id, model_name)
+    if cached_segments:
+        print(f"Loading cached segments from database for model {model_name}")
+        return json.loads(cached_segments)
+
+    print(f"Transcribing with Whisper model '{model_name}' on device: {device}")
+
+    # Load Whisper model
+    whisper_model = whisper.load_model(model_name, device=device)
+
+    # Transcribe with Whisper
+    result = whisper_model.transcribe(audio_path, language="es")
+    segments = result["segments"]
+
+    print(f"Transcription completed for {video_id} with model {model_name}")
+
+    # Cache segments in database
+    segments_json = json.dumps(segments)
+    await transcript_db.cache_transcription(video_id, model_name, segments_json)
+
+    return segments

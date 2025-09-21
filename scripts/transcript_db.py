@@ -11,6 +11,12 @@ class VideoRecord(BaseModel):
     url: str
     description: str
     transcript: Optional[str] = None
+    transcription_tiny: Optional[str] = None
+    transcription_base: Optional[str] = None
+    transcription_small: Optional[str] = None
+    transcription_medium: Optional[str] = None
+    transcription_large: Optional[str] = None
+    transcription_turbo: Optional[str] = None
     processed: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -34,6 +40,12 @@ class TranscriptDB:
                     url TEXT NOT NULL,
                     description TEXT,
                     transcript TEXT,
+                    transcription_tiny TEXT,
+                    transcription_base TEXT,
+                    transcription_small TEXT,
+                    transcription_medium TEXT,
+                    transcription_large TEXT,
+                    transcription_turbo TEXT,
                     processed BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -76,11 +88,13 @@ class TranscriptDB:
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT id, title, url, description, transcript, processed, created_at, updated_at FROM videos WHERE id = ?",
+                """SELECT id, title, url, description, transcript, transcription_tiny, transcription_base,
+                   transcription_small, transcription_medium, transcription_large, transcription_turbo,
+                   processed, created_at, updated_at FROM videos WHERE id = ?""",
                 (video_id,)
             )
             row = await cursor.fetchone()
-            
+
             if row:
                 return VideoRecord(
                     id=row[0],
@@ -88,9 +102,15 @@ class TranscriptDB:
                     url=row[2],
                     description=row[3],
                     transcript=row[4],
-                    processed=bool(row[5]),
-                    created_at=row[6],
-                    updated_at=row[7]
+                    transcription_tiny=row[5],
+                    transcription_base=row[6],
+                    transcription_small=row[7],
+                    transcription_medium=row[8],
+                    transcription_large=row[9],
+                    transcription_turbo=row[10],
+                    processed=bool(row[11]),
+                    created_at=row[12],
+                    updated_at=row[13]
                 )
             return None
     
@@ -100,15 +120,23 @@ class TranscriptDB:
         
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                INSERT OR REPLACE INTO videos 
-                (id, title, url, description, transcript, processed, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT OR REPLACE INTO videos
+                (id, title, url, description, transcript, transcription_tiny, transcription_base,
+                 transcription_small, transcription_medium, transcription_large, transcription_turbo,
+                 processed, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (
                 video_record.id,
                 video_record.title,
                 video_record.url,
                 video_record.description,
                 video_record.transcript,
+                video_record.transcription_tiny,
+                video_record.transcription_base,
+                video_record.transcription_small,
+                video_record.transcription_medium,
+                video_record.transcription_large,
+                video_record.transcription_turbo,
                 video_record.processed
             ))
             await db.commit()
@@ -143,11 +171,36 @@ class TranscriptDB:
     async def mark_processed(self, video_id: str) -> None:
         """Mark a video as processed"""
         await self.initialize()
-        
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "UPDATE videos SET processed = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (video_id,)
+            )
+            await db.commit()
+
+    async def get_transcription(self, video_id: str, model: str) -> Optional[str]:
+        """Get cached transcription for a specific Whisper model"""
+        await self.initialize()
+
+        column_name = f"transcription_{model}"
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                f"SELECT {column_name} FROM videos WHERE id = ?",
+                (video_id,)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    async def cache_transcription(self, video_id: str, model: str, segments_json: str) -> None:
+        """Cache transcription segments for a specific Whisper model"""
+        await self.initialize()
+
+        column_name = f"transcription_{model}"
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                f"UPDATE videos SET {column_name} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (segments_json, video_id)
             )
             await db.commit()
     
@@ -157,10 +210,12 @@ class TranscriptDB:
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT id, title, url, description, transcript, processed, created_at, updated_at FROM videos WHERE processed = FALSE AND transcript IS NOT NULL"
+                """SELECT id, title, url, description, transcript, transcription_tiny, transcription_base,
+                   transcription_small, transcription_medium, transcription_large, transcription_turbo,
+                   processed, created_at, updated_at FROM videos WHERE processed = FALSE AND transcript IS NOT NULL"""
             )
             rows = await cursor.fetchall()
-            
+
             return [
                 VideoRecord(
                     id=row[0],
@@ -168,9 +223,15 @@ class TranscriptDB:
                     url=row[2],
                     description=row[3],
                     transcript=row[4],
-                    processed=bool(row[5]),
-                    created_at=row[6],
-                    updated_at=row[7]
+                    transcription_tiny=row[5],
+                    transcription_base=row[6],
+                    transcription_small=row[7],
+                    transcription_medium=row[8],
+                    transcription_large=row[9],
+                    transcription_turbo=row[10],
+                    processed=bool(row[11]),
+                    created_at=row[12],
+                    updated_at=row[13]
                 )
                 for row in rows
             ]
