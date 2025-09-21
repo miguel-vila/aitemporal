@@ -10,7 +10,6 @@ class VideoRecord(BaseModel):
     title: str
     url: str
     description: str
-    transcript: Optional[str] = None
     transcription_tiny: Optional[str] = None
     transcription_base: Optional[str] = None
     transcription_small: Optional[str] = None
@@ -88,7 +87,7 @@ class TranscriptDB:
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """SELECT id, title, url, description, transcript, transcription_tiny, transcription_base,
+                """SELECT id, title, url, description, transcription_tiny, transcription_base,
                    transcription_small, transcription_medium, transcription_large, transcription_turbo,
                    processed, created_at, updated_at FROM videos WHERE id = ?""",
                 (video_id,)
@@ -101,16 +100,15 @@ class TranscriptDB:
                     title=row[1],
                     url=row[2],
                     description=row[3],
-                    transcript=row[4],
-                    transcription_tiny=row[5],
-                    transcription_base=row[6],
-                    transcription_small=row[7],
-                    transcription_medium=row[8],
-                    transcription_large=row[9],
-                    transcription_turbo=row[10],
-                    processed=bool(row[11]),
-                    created_at=row[12],
-                    updated_at=row[13]
+                    transcription_tiny=row[4],
+                    transcription_base=row[5],
+                    transcription_small=row[6],
+                    transcription_medium=row[7],
+                    transcription_large=row[8],
+                    transcription_turbo=row[9],
+                    processed=bool(row[10]),
+                    created_at=row[11],
+                    updated_at=row[12]
                 )
             return None
     
@@ -121,16 +119,15 @@ class TranscriptDB:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO videos
-                (id, title, url, description, transcript, transcription_tiny, transcription_base,
+                (id, title, url, description, transcription_tiny, transcription_base,
                  transcription_small, transcription_medium, transcription_large, transcription_turbo,
                  processed, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (
                 video_record.id,
                 video_record.title,
                 video_record.url,
                 video_record.description,
-                video_record.transcript,
                 video_record.transcription_tiny,
                 video_record.transcription_base,
                 video_record.transcription_small,
@@ -157,16 +154,6 @@ class TranscriptDB:
             )
             await db.commit()
     
-    async def cache_transcript(self, video_id: str, transcript: str) -> None:
-        """Cache transcript for a video"""
-        await self.initialize()
-        
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE videos SET transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (transcript, video_id)
-            )
-            await db.commit()
     
     async def mark_processed(self, video_id: str) -> None:
         """Mark a video as processed"""
@@ -210,9 +197,12 @@ class TranscriptDB:
         
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """SELECT id, title, url, description, transcript, transcription_tiny, transcription_base,
+                """SELECT id, title, url, description, transcription_tiny, transcription_base,
                    transcription_small, transcription_medium, transcription_large, transcription_turbo,
-                   processed, created_at, updated_at FROM videos WHERE processed = FALSE AND transcript IS NOT NULL"""
+                   processed, created_at, updated_at FROM videos WHERE processed = FALSE AND (
+                   transcription_tiny IS NOT NULL OR transcription_base IS NOT NULL OR
+                   transcription_small IS NOT NULL OR transcription_medium IS NOT NULL OR
+                   transcription_large IS NOT NULL OR transcription_turbo IS NOT NULL)"""
             )
             rows = await cursor.fetchall()
 
@@ -222,16 +212,15 @@ class TranscriptDB:
                     title=row[1],
                     url=row[2],
                     description=row[3],
-                    transcript=row[4],
-                    transcription_tiny=row[5],
-                    transcription_base=row[6],
-                    transcription_small=row[7],
-                    transcription_medium=row[8],
-                    transcription_large=row[9],
-                    transcription_turbo=row[10],
-                    processed=bool(row[11]),
-                    created_at=row[12],
-                    updated_at=row[13]
+                    transcription_tiny=row[4],
+                    transcription_base=row[5],
+                    transcription_small=row[6],
+                    transcription_medium=row[7],
+                    transcription_large=row[8],
+                    transcription_turbo=row[9],
+                    processed=bool(row[10]),
+                    created_at=row[11],
+                    updated_at=row[12]
                 )
                 for row in rows
             ]
@@ -283,9 +272,12 @@ class TranscriptDB:
             cursor = await db.execute("SELECT COUNT(*) FROM videos WHERE processed = TRUE")
             processed_videos = (await cursor.fetchone())[0]
             
-            # Count videos with transcripts
-            cursor = await db.execute("SELECT COUNT(*) FROM videos WHERE transcript IS NOT NULL")
-            videos_with_transcripts = (await cursor.fetchone())[0]
+            # Count videos with transcriptions
+            cursor = await db.execute("""SELECT COUNT(*) FROM videos WHERE
+                transcription_tiny IS NOT NULL OR transcription_base IS NOT NULL OR
+                transcription_small IS NOT NULL OR transcription_medium IS NOT NULL OR
+                transcription_large IS NOT NULL OR transcription_turbo IS NOT NULL""")
+            videos_with_transcriptions = (await cursor.fetchone())[0]
             
             # Count total chunks
             cursor = await db.execute("SELECT COUNT(*) FROM transcript_chunks")
@@ -294,6 +286,6 @@ class TranscriptDB:
             return {
                 "total_videos": total_videos,
                 "processed_videos": processed_videos,
-                "videos_with_transcripts": videos_with_transcripts,
+                "videos_with_transcriptions": videos_with_transcriptions,
                 "total_chunks": total_chunks
             }

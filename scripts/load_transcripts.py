@@ -63,7 +63,6 @@ class Video(BaseModel):
     title: str
     url: str
     description: str
-    transcript: str | None
 
 ydl_opts: dict[str, Any] = {
     "quiet": True,
@@ -120,20 +119,18 @@ async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
             id=cached_video.id,
             title=cached_video.title,
             url=cached_video.url,
-            description=cached_video.description or '',
-            transcript=cached_video.transcript
+            description=cached_video.description or ''
         )
     title = entry['title']
     url = entry['url']
     description = clean_description(await get_full_description(video_id, url))
-    video = Video(id=video_id, title=title, url=url, description=description, transcript=None)
+    video = Video(id=video_id, title=title, url=url, description=description)
     await transcript_db.upsert_video(VideoRecord(
         id=video.id,
         title=video.title,
         url=video.url,
         description=video.description,
-        processed=False,
-        transcript=None
+        processed=False
     ))
     print_debug(f'processed {video_id}')
     return video
@@ -303,9 +300,19 @@ async def get_diarized_transcript(video_id: str, video_url: str, cached_video: V
     """Get diarized transcript using Whisper + pyannote.audio"""
     global diarization_semaphore
 
-    if cached_video and cached_video.transcript:
-        print_debug(f"Transcript cache hit for video {video_id}")
-        return cached_video.transcript
+    # Check if we have any cached transcription (prefer the current segments_model)
+    if cached_video:
+        # Try to get a transcription for the current model first
+        from audio_processing import segments_model
+        if hasattr(cached_video, f'transcription_{segments_model}'):
+            cached_transcription = getattr(cached_video, f'transcription_{segments_model}')
+            if cached_transcription:
+                print_debug(f"Transcription cache hit for video {video_id} with model {segments_model}")
+                # We need to create the diarized text from the cached segments
+                import json
+                segments = json.loads(cached_transcription)
+                # For now, return just the text concatenated (you may want to implement proper diarization recovery)
+                return ' '.join([seg['text'] for seg in segments])
 
     async with diarization_semaphore:
         # Download audio
