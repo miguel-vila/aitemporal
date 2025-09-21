@@ -10,8 +10,6 @@ import torch
 from typing import Any, List, Dict
 import asyncio
 import functools
-import whisper
-from pyannote.audio import Pipeline
 import ffmpeg
 from pathlib import Path
 
@@ -313,45 +311,12 @@ async def get_diarized_transcript(video_id: str, video_url: str, cached_video: V
         audio_path = await download_audio(video_id, video_url)
 
         loop = asyncio.get_running_loop()
+        
+        def _transcribe_and_diarize_audio():
+            from audio_processing import transcribe_and_diarize_audio
+            return transcribe_and_diarize_audio(audio_path)
 
-        def process_audio():
-            # Load Whisper model
-            whisper_model = whisper.load_model("base")
-
-            # Transcribe with Whisper
-            result = whisper_model.transcribe(audio_path, language="es")
-
-            # Load diarization pipeline
-            # Note: You need to accept user agreement and set HF_TOKEN for pyannote
-            diarization_pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=os.getenv("HF_DIARIZATION_TOKEN")
-            )
-
-            # Perform diarization
-            diarization = diarization_pipeline(audio_path)
-
-            # Align transcription with diarization
-            segments = result["segments"]
-            diarized_text = []
-
-            for segment in segments:
-                start_time = segment["start"]
-                end_time = segment["end"]
-                text = segment["text"].strip()
-
-                # Find the speaker for this time period
-                speaker = "SPEAKER_UNKNOWN"
-                for turn, _, spk in diarization.itertracks(yield_label=True):
-                    if turn.start <= start_time <= turn.end or turn.start <= end_time <= turn.end:
-                        speaker = spk
-                        break
-
-                diarized_text.append(f"[{speaker}]: {text}")
-
-            return "\n".join(diarized_text)
-
-        transcript_text = await loop.run_in_executor(None, process_audio)
+        transcript_text = await loop.run_in_executor(None, _transcribe_and_diarize_audio)
 
         # Cache the transcript
         await transcript_db.cache_transcript(video_id, transcript_text)
