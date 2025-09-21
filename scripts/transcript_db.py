@@ -79,7 +79,6 @@ class TranscriptDB:
             await db.commit()
         
         self._initialized = True
-        print(f"Database initialized at {self.db_path}")
     
     async def get_video(self, video_id: str) -> Optional[VideoRecord]:
         """Get a video record by ID"""

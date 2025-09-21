@@ -261,7 +261,7 @@ async def download_audio(video_id: str, video_url: str) -> str:
     webshare_username = os.getenv("WEBSHARE_PROXY_USERNAME")
     webshare_password = os.getenv("WEBSHARE_PROXY_PASSWORD")
     if webshare_username and webshare_password:
-        ydl_opts['proxy'] = f'http://{webshare_username}-1:{webshare_password}@p.webshare.io:80'
+        ydl_opts['proxy'] = f'http://{webshare_username}-4:{webshare_password}@p.webshare.io:80'
 
     loop = asyncio.get_running_loop()
 
@@ -320,7 +320,7 @@ async def get_diarized_transcript(video_id: str, video_url: str, cached_video: V
         transcript_text = await transcribe_and_diarize_audio(audio_path, video_id)
         return transcript_text
 
-async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
+async def insert_video(video: Video, model: SentenceTransformer, index: IndexAsyncio):
     # Check if video is already processed
     cached_video = await transcript_db.get_video(video.id)
     if cached_video and cached_video.processed:
@@ -344,8 +344,8 @@ async def insert_video(video: Video, ytt_api: YouTubeTranscriptApi, model: Sente
     # Mark as processed
     await transcript_db.mark_processed(video.id)
 
-async def insert_video_and_report(video: Video, ytt_api: YouTubeTranscriptApi, model: SentenceTransformer, index: IndexAsyncio):
-    await insert_video(video, ytt_api, model, index)
+async def insert_video_and_report(video: Video, model: SentenceTransformer, index: IndexAsyncio):
+    await insert_video(video, model, index)
     report_mem(f'after {video.id}')
 
 async def main():
@@ -360,13 +360,6 @@ async def main():
     embedding_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
     model = SentenceTransformer(embedding_model, device=device)
     index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
-    print("using webshare proxy username:", os.getenv("WEBSHARE_PROXY_USERNAME"))
-    ytt_api = YouTubeTranscriptApi(
-        proxy_config=WebshareProxyConfig(
-            proxy_username=os.getenv("WEBSHARE_PROXY_USERNAME"), # type: ignore
-            proxy_password=os.getenv("WEBSHARE_PROXY_PASSWORD"), # type: ignore
-        )
-    )
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
 
@@ -376,7 +369,7 @@ async def main():
         index: IndexAsyncio = pc.IndexAsyncio(host=index_host) # type: ignore
         report_mem('baseline before videos')
         await asyncio.gather(
-            *[insert_video_and_report(video, ytt_api, model, index) for video in videos]
+            *[insert_video_and_report(video, model, index) for video in videos]
         )
         print_debug('Done upserting!')
 
