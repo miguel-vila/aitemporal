@@ -7,7 +7,7 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
-from audio_processing import transcribe_and_diarize_audio
+from audio_processing import transcribe_and_diarize_audio, segments_model, AudioLine
 from typing import Any, List, Dict
 import asyncio
 import functools
@@ -70,6 +70,7 @@ ydl_opts: dict[str, Any] = {
     "extract_flat": True,   # don't download, just get metadata
     "skip_download": True,
     "no_warnings": True,
+    "ignore_no_formats_error": True,
 }
 
 # Global database instance
@@ -104,6 +105,13 @@ async def get_full_description(video_id: str, video_url: str) -> str:
         return cached_description
     
     print_debug(f"Cache miss for video {video_id}, fetching from API")
+    
+    # td: unify proxy config setting
+    webshare_username = os.getenv("WEBSHARE_PROXY_USERNAME")
+    webshare_password = os.getenv("WEBSHARE_PROXY_PASSWORD")
+    if webshare_username and webshare_password:
+        ydl_opts['proxy'] = f'http://{webshare_username}-4:{webshare_password}@p.webshare.io:80'
+    
     # a new client to avoid synchronization locks. YoutubeDL is not thread-safe
     with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
         video_info = await asyncio.to_thread(ydl.extract_info, url=video_url, download=False)
@@ -304,7 +312,6 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     # Check if we have any cached transcription (prefer the current segments_model)
     if cached_video:
         # Try to get a transcription for the current model first
-        from audio_processing import segments_model
         if hasattr(cached_video, f'transcription_{segments_model}'):
             cached_transcription = getattr(cached_video, f'transcription_{segments_model}')
             if cached_transcription:
@@ -318,11 +325,36 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     async with diarization_semaphore:
         # Download audio
         audio_path = await download_audio(video_id, video_url)
-        transcript_text = await transcribe_and_diarize_audio(audio_path, video_id)
+        cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, segments_model)
+        if cached_diarized_transcript:
+            diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
+        else:
+            diarized_transcript = await transcribe_and_diarize_audio(audio_path, video_id)
+            transcript_text = "\n".join([str(x) for x in diarized_transcript])
+            await transcript_db.cache_diarized_transcript(video_id, segments_model, transcript_text)
+        diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
+        transcript_text = "\n".join([str(x) for x in diarized_transcript])
         return transcript_text
 
+def map_speakers(video_id: str, audio_lines: List[AudioLine], interviewer_name: str, interviewee_name: str) -> List[AudioLine]:
+    interviewer_speaker = None
+    for line in audio_lines:
+        if interviewee_name in line.text:
+            interviewer_speaker = line.speaker
+            break
+    if not interviewer_speaker:
+        raise Exception(f"Couldn't identify interviewer speaker in transcript for video {video_id}")
+    mapped_lines: List[AudioLine] = []
+    for line in audio_lines:
+        if line.speaker == interviewer_speaker:
+            mapped_lines.append(AudioLine(interviewer_name, line.text))
+        else:
+            mapped_lines.append(AudioLine(interviewee_name, line.text))
+    return mapped_lines
+
 video_titles_to_skip = [
-    "M.U.T" # not an interview episode
+    "M.U.T", # not an interview episode
+    "#105 - Mateo Castaño y Sebastián Salazar - Antioquia emergente" # 2 interviewees, need to figure out
 ]
 
 async def insert_video(video: Video, model: SentenceTransformer, index: IndexAsyncio):

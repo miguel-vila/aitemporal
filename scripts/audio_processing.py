@@ -45,8 +45,31 @@ async def compare_models_segments(video_id: str) -> None:
         print(f"Model: {model}")
         print(out[model])
         print("\n")
+        
+class AudioLine:
+    def __init__(self, speaker: str, text: str):
+        self.speaker = speaker
+        self.text = text
+    @staticmethod
+    def from_str(lines: str) -> List['AudioLine']:
+        result: List['AudioLine'] = []
+        for line in lines.splitlines():
+            if line.startswith('[') and ']' in line:
+                speaker, text = line[1:].split(']', 1)
+                result.append(AudioLine(speaker.strip(), text.strip()))
+            else:
+                raise ValueError(f"Line does not start with [SPEAKER]: {line}")
+        return result
+    
+    def __str__(self) -> str:
+        return f"[{self.speaker}] {self.text}"
 
-async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> str:
+async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> List[AudioLine]:
+    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, segments_model)
+    if cached_diarized_transcript:
+        print(f"Loading cached diarized transcript from database for model {segments_model}")
+        return cached_diarized_transcript
+
     segments = await transcribe_with_model(audio_path, video_id, segments_model)
 
     # Load diarization pipeline
@@ -61,7 +84,7 @@ async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> str:
     print("Diarization completed for:", audio_path)
 
     # Align transcription with diarization
-    diarized_text = []
+    diarized_text: List[AudioLine] = []
 
     for segment in segments:
         start_time = segment["start"]
@@ -78,9 +101,9 @@ async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> str:
                 speaker = spk
                 break
 
-        diarized_text.append(f"[{speaker}]: {text}")
+        diarized_text.append(AudioLine(speaker, text))
 
-    return "\n".join(diarized_text)
+    return diarized_text
 
 async def transcribe_with_model(audio_path: str, video_id: str, model_name: str) -> List[Dict[str, Any]]:
     """
