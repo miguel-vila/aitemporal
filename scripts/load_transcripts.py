@@ -7,12 +7,14 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
-from audio_processing import transcribe_and_diarize_audio, segments_model, AudioLine
+from audio_processing import transcribe_and_diarize_audio, whisper_transcription_model, whisper_diarization_model, AudioLine
 from typing import Any, List, Dict
 import asyncio
 import functools
 import ffmpeg
 from pathlib import Path
+import sys
+import json
 
 import psutil
 import tracemalloc
@@ -121,7 +123,7 @@ async def get_full_description(video_id: str, video_url: str) -> str:
 
 async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
     video_id = entry['id']
-    print_debug(f'processing {video_id}')
+    print_debug(f'retrieving video info for {video_id}')
     cached_video = await transcript_db.get_video(video_id)
     if cached_video:
         return Video(
@@ -141,7 +143,7 @@ async def channel_entry_to_video(entry: Dict[str, Any]) -> Video:
         description=video.description,
         processed=False
     ))
-    print_debug(f'processed {video_id}')
+    print_debug(f'downloaded info and saved for {video_id}')
     return video
 
 async def download_videos_info(channel_url: str) -> list[Video]:
@@ -165,6 +167,7 @@ def chunk_diarized_text(
     Returns:
         List of text chunks that preserve speaker turn structure
     """
+    print(f'Chunking diarized text: {diarized_text}')
     if not diarized_text.strip():
         return []
 
@@ -309,32 +312,31 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     """Get diarized transcript using Whisper + pyannote.audio"""
     global diarization_semaphore
 
-    # Check if we have any cached transcription (prefer the current segments_model)
-    if cached_video:
-        # Try to get a transcription for the current model first
-        if hasattr(cached_video, f'transcription_{segments_model}'):
-            cached_transcription = getattr(cached_video, f'transcription_{segments_model}')
-            if cached_transcription:
-                print_debug(f"Transcription cache hit for video {video_id} with model {segments_model}")
-                # We need to create the diarized text from the cached segments
-                import json
-                segments = json.loads(cached_transcription)
-                # For now, return just the text concatenated (you may want to implement proper diarization recovery)
-                return ' '.join([seg['text'] for seg in segments])
+    # if cached_video and hasattr(cached_video, f'transcription_{segments_model}'):
+    #     cached_transcription = getattr(cached_video, f'transcription_{segments_model}')
+    #     print_debug(f"Transcription cache hit for video {video_id} with model {segments_model}")
+    #     # We need to create the diarized text from the cached segments
+    #     segments = json.loads(cached_transcription)
+    #     return ' '.join([seg['text'] for seg in segments])
 
-    async with diarization_semaphore:
         # Download audio
-        audio_path = await download_audio(video_id, video_url)
-        cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, segments_model)
-        if cached_diarized_transcript:
-            diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
-        else:
+    audio_path = await download_audio(video_id, video_url)
+    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, segments_model)
+    if cached_diarized_transcript:
+        diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
+    else:
+        async with diarization_semaphore:
             diarized_transcript = await transcribe_and_diarize_audio(audio_path, video_id)
-            transcript_text = "\n".join([str(x) for x in diarized_transcript])
-            await transcript_db.cache_diarized_transcript(video_id, segments_model, transcript_text)
-        diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
         transcript_text = "\n".join([str(x) for x in diarized_transcript])
-        return transcript_text
+        await transcript_db.cache_diarized_transcript(video_id, whisper_transcription_model, whisper_diarization_model, transcript_text)
+    diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
+    
+    print_debug(f'First 5 lines of diarized transcript for video {video_id}:')
+    for audio_line in diarized_transcript[:5]:
+        print_debug(f'{audio_line}')
+    
+    transcript_text = "\n".join([str(x) for x in diarized_transcript])
+    return transcript_text
 
 def map_speakers(video_id: str, audio_lines: List[AudioLine], interviewer_name: str, interviewee_name: str) -> List[AudioLine]:
     interviewer_speaker = None
@@ -357,7 +359,7 @@ video_titles_to_skip = [
     "#105 - Mateo Castaño y Sebastián Salazar - Antioquia emergente" # 2 interviewees, need to figure out
 ]
 
-async def insert_video(video: Video, model: SentenceTransformer, index: IndexAsyncio):
+async def process_video(video: Video, model: SentenceTransformer, index: IndexAsyncio):
     if video.title in video_titles_to_skip:
         print_debug(f"Skipping video {video.id}")
         return
@@ -393,8 +395,8 @@ async def insert_video(video: Video, model: SentenceTransformer, index: IndexAsy
     # Mark as processed
     await transcript_db.mark_processed(video.id)
 
-async def insert_video_and_report(video: Video, model: SentenceTransformer, index: IndexAsyncio):
-    await insert_video(video, model, index)
+async def process_video_and_report(video: Video, model: SentenceTransformer, index: IndexAsyncio):
+    await process_video(video, model, index)
     report_mem(f'after {video.id}')
 
 async def main():
@@ -411,16 +413,31 @@ async def main():
     index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
-
     videos = await download_videos_info(channel_url)
-    print_debug(f"Found {len(videos)} videos.")
+
     async with PineconeAsyncio(api_key=os.getenv("PINECONE_API_KEY")) as pc:
         index: IndexAsyncio = pc.IndexAsyncio(host=index_host) # type: ignore
-        report_mem('baseline before videos')
-        await asyncio.gather(
-            *[insert_video_and_report(video, model, index) for video in videos]
-        )
-        print_debug('Done upserting!')
+        # if we receive a video ID as argument, process just that video
+        print(f'sys.argv: {sys.argv}')
+        print(f'len(sys.argv): {len(sys.argv)}')
+        if len(sys.argv) > 1:
+            video_id = sys.argv[1]
+            print_debug(f"Looking for video {video_id} in channel")
+            video = next((v for v in videos if v.id == video_id), None)
+            if not video:
+                print(f"Video {video_id} not found in channel")
+                return
+            print_debug(f"Processing single video {video_id}")
+            await process_video_and_report(video, model, index)
+            print_debug('Done upserting single video!')
+        else:
+            print_debug(f"Found {len(videos)} videos.")
+            report_mem('baseline before videos')
+            await asyncio.gather(
+                *[process_video_and_report(video, model, index) for video in videos]
+            )
+            print_debug('Done upserting!')
 
 if __name__ == "__main__":
+    print(f'sys.argv: {sys.argv}')
     asyncio.run(main())

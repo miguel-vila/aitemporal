@@ -22,6 +22,12 @@ class VideoRecord(BaseModel):
     diarized_transcript_medium_2_1: Optional[str] = None
     diarized_transcript_large_2_1: Optional[str] = None
     diarized_transcript_turbo_2_1: Optional[str] = None
+    diarized_transcript_tiny_3_1: Optional[str] = None
+    diarized_transcript_base_3_1: Optional[str] = None
+    diarized_transcript_small_3_1: Optional[str] = None
+    diarized_transcript_medium_3_1: Optional[str] = None
+    diarized_transcript_large_3_1: Optional[str] = None
+    diarized_transcript_turbo_3_1: Optional[str] = None
     processed: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -56,6 +62,12 @@ class TranscriptDB:
                     diarized_transcript_medium_2_1 TEXT,
                     diarized_transcript_large_2_1 TEXT,
                     diarized_transcript_turbo_2_1 TEXT,
+                    diarized_transcript_tiny_3_1 TEXT,
+                    diarized_transcript_base_3_1 TEXT,
+                    diarized_transcript_small_3_1 TEXT,
+                    diarized_transcript_medium_3_1 TEXT,
+                    diarized_transcript_large_3_1 TEXT,
+                    diarized_transcript_turbo_3_1 TEXT,
                     processed BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -101,6 +113,8 @@ class TranscriptDB:
                    transcription_small, transcription_medium, transcription_large, transcription_turbo,
                    diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
                    diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
+                   diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
+                   diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
                    processed, created_at, updated_at FROM videos WHERE id = ?""",
                 (video_id,)
             )
@@ -124,9 +138,15 @@ class TranscriptDB:
                     diarized_transcript_medium_2_1=row[13],
                     diarized_transcript_large_2_1=row[14],
                     diarized_transcript_turbo_2_1=row[15],
-                    processed=bool(row[16]),
-                    created_at=row[17],
-                    updated_at=row[18]
+                    diarized_transcript_tiny_3_1=row[16],
+                    diarized_transcript_base_3_1=row[17],
+                    diarized_transcript_small_3_1=row[18],
+                    diarized_transcript_medium_3_1=row[19],
+                    diarized_transcript_large_3_1=row[20],
+                    diarized_transcript_turbo_3_1=row[21],
+                    processed=bool(row[22]),
+                    created_at=row[23],
+                    updated_at=row[24]
                 )
             return None
     
@@ -141,6 +161,8 @@ class TranscriptDB:
                  transcription_small, transcription_medium, transcription_large, transcription_turbo,
                  diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
                  diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
+                 diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
+                 diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
                  processed, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (
@@ -160,6 +182,12 @@ class TranscriptDB:
                 video_record.diarized_transcript_medium_2_1,
                 video_record.diarized_transcript_large_2_1,
                 video_record.diarized_transcript_turbo_2_1,
+                video_record.diarized_transcript_tiny_3_1,
+                video_record.diarized_transcript_base_3_1,
+                video_record.diarized_transcript_small_3_1,
+                video_record.diarized_transcript_medium_3_1,
+                video_record.diarized_transcript_large_3_1,
+                video_record.diarized_transcript_turbo_3_1,
                 video_record.processed
             ))
             await db.commit()
@@ -192,11 +220,11 @@ class TranscriptDB:
             )
             await db.commit()
 
-    async def get_transcription(self, video_id: str, model: str) -> Optional[str]:
+    async def get_transcription(self, video_id: str, transcription_model: str) -> Optional[str]:
         """Get cached transcription for a specific Whisper model"""
         await self.initialize()
 
-        column_name = f"transcription_{model}"
+        column_name = f"transcription_{transcription_model}"
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 f"SELECT {column_name} FROM videos WHERE id = ?",
@@ -205,11 +233,11 @@ class TranscriptDB:
             row = await cursor.fetchone()
             return row[0] if row and row[0] else None
 
-    async def cache_transcription(self, video_id: str, model: str, segments_json: str) -> None:
-        """Cache transcription segments for a specific Whisper model"""
+    async def cache_transcription(self, video_id: str, transcription_model: str, segments_json: str) -> None:
+        """Cache transcription segments for a specific Whisper transcription model"""
         await self.initialize()
 
-        column_name = f"transcription_{model}"
+        column_name = f"transcription_{transcription_model}"
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 f"UPDATE videos SET {column_name} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -217,11 +245,12 @@ class TranscriptDB:
             )
             await db.commit()
 
-    async def get_diarized_transcript(self, video_id: str, model: str) -> Optional[str]:
-        """Get cached diarized transcript for a specific Whisper model"""
+    async def get_diarized_transcript(self, video_id: str, transcription_model: str, diarization_model: str) -> Optional[str]:
+        """Get cached diarized transcript for a specific Segments and Whisper model"""
         await self.initialize()
+        diarization_model_str = diarization_model.replace('.', '_')
 
-        column_name = f"diarized_transcript_{model}_2_1"
+        column_name = f"diarized_transcript_{transcription_model}_{diarization_model_str}"
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 f"SELECT {column_name} FROM videos WHERE id = ?",
@@ -230,11 +259,12 @@ class TranscriptDB:
             row = await cursor.fetchone()
             return row[0] if row and row[0] else None
 
-    async def cache_diarized_transcript(self, video_id: str, model: str, diarized_text: str) -> None:
-        """Cache diarized transcript for a specific Whisper model"""
+    async def cache_diarized_transcript(self, video_id: str, transcription_model: str, diarization_model: str, diarized_text: str) -> None:
+        """Cache diarized transcript for a specific Whisper transcription_model"""
         await self.initialize()
+        diarization_model_str = diarization_model.replace('.', '_')
 
-        column_name = f"diarized_transcript_{model}_2_1"
+        column_name = f"diarized_transcript_{transcription_model}_{diarization_model_str}"
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 f"UPDATE videos SET {column_name} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -252,6 +282,8 @@ class TranscriptDB:
                    transcription_small, transcription_medium, transcription_large, transcription_turbo,
                    diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
                    diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
+                   diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
+                   diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
                    processed, created_at, updated_at FROM videos WHERE processed = FALSE"""
             )
             rows = await cursor.fetchall()
@@ -274,9 +306,15 @@ class TranscriptDB:
                     diarized_transcript_medium_2_1=row[13],
                     diarized_transcript_large_2_1=row[14],
                     diarized_transcript_turbo_2_1=row[15],
-                    processed=bool(row[16]),
-                    created_at=row[17],
-                    updated_at=row[18]
+                    diarized_transcript_tiny_3_1=row[16],
+                    diarized_transcript_base_3_1=row[17],
+                    diarized_transcript_small_3_1=row[18],
+                    diarized_transcript_medium_3_1=row[19],
+                    diarized_transcript_large_3_1=row[20],
+                    diarized_transcript_turbo_3_1=row[21],
+                    processed=bool(row[22]),
+                    created_at=row[23],
+                    updated_at=row[24]
                 )
                 for row in rows
             ]
