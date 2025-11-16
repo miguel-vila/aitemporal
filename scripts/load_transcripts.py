@@ -1,5 +1,3 @@
-from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import WebshareProxyConfig
 import yt_dlp
 from pydantic import BaseModel
 import os
@@ -14,13 +12,12 @@ import functools
 import ffmpeg
 from pathlib import Path
 import sys
-import json
 
 import psutil
 import tracemalloc
 from pympler import muppy, summary
 from transcript_db import TranscriptDB, VideoRecord
-from name_recognition import extract_names
+from name_recognition import extract_names_for_text, extract_names_for_title, normalize_name
 
 debug = True
 debug_memory = False
@@ -34,7 +31,7 @@ def report_mem(tag: str):
     global debug_memory
     if debug_memory:
         rss = proc.memory_info().rss / (1024**2)
-        objs = muppy.get_objects()
+        objs = muppy.get_objects() # type: ignore
         sum1 = summary.summarize(objs) # type: ignore
         # top = summary.format_(summary.sort(sum1, 'size'))[:10]
         print(f"\n=== {tag} ===")
@@ -49,7 +46,7 @@ async def get_embedding(model: SentenceTransformer, transcripts: List[str]) -> L
     async with model_semaphore:
         loop = asyncio.get_running_loop()
         # Run encode in a thread to avoid blocking event loop
-        encode_partial = functools.partial(
+        encode_partial = functools.partial( # type: ignore
             model.encode, 
             sentences = transcripts,
             normalize_embeddings = True, # important for cosine similarity
@@ -173,7 +170,7 @@ def chunk_diarized_text(
 
     # Split by lines and parse speaker turns
     lines = diarized_text.strip().split('\n')
-    speaker_turns = []
+    speaker_turns: List[tuple[str, str]] = []
 
     for line in lines:
         line = line.strip()
@@ -191,11 +188,11 @@ def chunk_diarized_text(
 
     print(f'Found {len(speaker_turns)} speaker turns')
 
-    chunks = []
-    current_chunk_turns = []
+    chunks: List[str] = []
+    current_chunk_turns: List[str] = []
     current_chunk_size = 0
 
-    for i, (speaker, content) in enumerate(speaker_turns):
+    for (speaker, content) in speaker_turns:
         turn_text = f"[{speaker}]: {content}"
         turn_size = len(turn_text)
 
@@ -260,7 +257,7 @@ async def download_audio(video_id: str, video_url: str) -> str:
     print_debug(f"Downloading audio for video {video_id}")
 
     # Download audio using yt-dlp
-    ydl_opts = {
+    ydl_opts: dict[str, Any] = {
         'format': 'bestaudio/best',
         'outtmpl': f'./audio/{video_id}.%(ext)s',
         'quiet': True,
@@ -312,16 +309,8 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     """Get diarized transcript using Whisper + pyannote.audio"""
     global diarization_semaphore
 
-    # if cached_video and hasattr(cached_video, f'transcription_{segments_model}'):
-    #     cached_transcription = getattr(cached_video, f'transcription_{segments_model}')
-    #     print_debug(f"Transcription cache hit for video {video_id} with model {segments_model}")
-    #     # We need to create the diarized text from the cached segments
-    #     segments = json.loads(cached_transcription)
-    #     return ' '.join([seg['text'] for seg in segments])
-
-        # Download audio
     audio_path = await download_audio(video_id, video_url)
-    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, segments_model)
+    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, whisper_transcription_model, whisper_diarization_model)
     if cached_diarized_transcript:
         diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
     else:
@@ -340,8 +329,11 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
 
 def map_speakers(video_id: str, audio_lines: List[AudioLine], interviewer_name: str, interviewee_name: str) -> List[AudioLine]:
     interviewer_speaker = None
+    print(f'Interviewer name: {interviewer_name}, interviewee name: {interviewee_name}')
+    interviewee_name_norm = normalize_name(interviewee_name)
     for line in audio_lines:
-        if interviewee_name in line.text:
+        line_names_norm = [normalize_name(n) for n in extract_names_for_text(line.text)]
+        if interviewee_name_norm in line_names_norm:
             interviewer_speaker = line.speaker
             break
     if not interviewer_speaker:
@@ -352,6 +344,14 @@ def map_speakers(video_id: str, audio_lines: List[AudioLine], interviewer_name: 
             mapped_lines.append(AudioLine(interviewer_name, line.text))
         else:
             mapped_lines.append(AudioLine(interviewee_name, line.text))
+    # Sanity check: ensure both speakers are present
+    speakers = set(line.speaker for line in mapped_lines)
+    print(f'speakers found after mapping: {speakers}')
+    if interviewer_name not in speakers or interviewee_name not in speakers:
+        raise Exception(f"Speaker mapping failed for video {video_id}: found speakers {speakers}, expected {interviewer_name} and {interviewee_name}")
+    # Sanity check: ensure no unknown speakers
+    if len(speakers) > 2:
+        raise Exception(f"Too many speakers after mapping for video {video_id}: found speakers {speakers}, expected only {interviewer_name} and {interviewee_name}")
     return mapped_lines
 
 video_titles_to_skip = [
@@ -369,7 +369,7 @@ async def process_video(video: Video, model: SentenceTransformer, index: IndexAs
         print_debug(f"Video {video.id} already processed, skipping")
         return
     
-    recognized_names = extract_names(video.title)
+    recognized_names = extract_names_for_title(video.title)
     if len(recognized_names) == 0:
         raise Exception("Didn't recognize any name in title:", video.title)
     if len(recognized_names) > 1:
@@ -379,21 +379,22 @@ async def process_video(video: Video, model: SentenceTransformer, index: IndexAs
     interviewee_name = recognized_names[0]
 
     transcript_text = await get_diarized_transcript(video.id, video.url, interviewer_name, interviewee_name, cached_video)
+    print(transcript_text)
             
     chunks = chunk_diarized_text(transcript_text)
     print(f'Split video {video.id} in {len(chunks)} chunks')
-    if(len(chunks) == 0):
-        print(f'Video {video.id} has no chunks. length={len(transcript_text)}.')
-        print(f'Transcript text: {transcript_text[:200]}...{transcript_text[-200:]}')
+    # if(len(chunks) == 0):
+    #     print(f'Video {video.id} has no chunks. length={len(transcript_text)}.')
+    #     print(f'Transcript text: {transcript_text[:200]}...{transcript_text[-200:]}')
     embeddings = await get_embedding(model, chunks)
     videos_with_embeddings = [
         wrap_video_with_embedding(i, chunk, embedding, video)
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
-    await index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
+    # await index.upsert(videos_with_embeddings, batch_size=100) # type: ignore
     
     # Mark as processed
-    await transcript_db.mark_processed(video.id)
+    # await transcript_db.mark_processed(video.id)
 
 async def process_video_and_report(video: Video, model: SentenceTransformer, index: IndexAsyncio):
     await process_video(video, model, index)
@@ -418,8 +419,6 @@ async def main():
     async with PineconeAsyncio(api_key=os.getenv("PINECONE_API_KEY")) as pc:
         index: IndexAsyncio = pc.IndexAsyncio(host=index_host) # type: ignore
         # if we receive a video ID as argument, process just that video
-        print(f'sys.argv: {sys.argv}')
-        print(f'len(sys.argv): {len(sys.argv)}')
         if len(sys.argv) > 1:
             video_id = sys.argv[1]
             print_debug(f"Looking for video {video_id} in channel")
@@ -439,5 +438,4 @@ async def main():
             print_debug('Done upserting!')
 
 if __name__ == "__main__":
-    print(f'sys.argv: {sys.argv}')
     asyncio.run(main())
