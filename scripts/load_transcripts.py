@@ -260,8 +260,8 @@ async def download_audio(video_id: str, video_url: str) -> str:
     ydl_opts: dict[str, Any] = {
         'format': 'bestaudio/best',
         'outtmpl': f'./audio/{video_id}.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'socket_timeout': 60, # 1 minute timeout
         'http_chunk_size': 10485760,  # 10MB chunks
     }
@@ -277,6 +277,7 @@ async def download_audio(video_id: str, video_url: str) -> str:
     def download_and_convert():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
+            print_debug(f"Downloaded audio for video {video_id}")
             downloaded_file = ydl.prepare_filename(info)
 
             # Convert to WAV using ffmpeg
@@ -414,22 +415,41 @@ async def main():
     index_host = 'atemporal-transcripts-f09myss.svc.aped-4627-b74a.pinecone.io'
     channel_url='https://www.youtube.com/@atemporalpodcast/videos'
     report_mem('initialized')
-    videos = await download_videos_info(channel_url)
 
     async with PineconeAsyncio(api_key=os.getenv("PINECONE_API_KEY")) as pc:
         index: IndexAsyncio = pc.IndexAsyncio(host=index_host) # type: ignore
         # if we receive a video ID as argument, process just that video
         if len(sys.argv) > 1:
             video_id = sys.argv[1]
-            print_debug(f"Looking for video {video_id} in channel")
-            video = next((v for v in videos if v.id == video_id), None)
-            if not video:
-                print(f"Video {video_id} not found in channel")
-                return
             print_debug(f"Processing single video {video_id}")
+            # Fetch only the specific video's metadata
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            cached_video = await transcript_db.get_video(video_id)
+            if cached_video:
+                video = Video(
+                    id=cached_video.id,
+                    title=cached_video.title,
+                    url=cached_video.url,
+                    description=cached_video.description or ''
+                )
+            else:
+                # Fetch single video metadata directly
+                description = clean_description(await get_full_description(video_id, video_url))
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl: # type: ignore
+                    video_info = await asyncio.to_thread(ydl.extract_info, url=video_url, download=False)
+                    title = video_info.get('title', '')
+                video = Video(id=video_id, title=title, url=video_url, description=description)
+                await transcript_db.upsert_video(VideoRecord(
+                    id=video.id,
+                    title=video.title,
+                    url=video.url,
+                    description=video.description,
+                    processed=False
+                ))
             await process_video_and_report(video, model, index)
             print_debug('Done upserting single video!')
         else:
+            videos = await download_videos_info(channel_url)
             print_debug(f"Found {len(videos)} videos.")
             report_mem('baseline before videos')
             await asyncio.gather(
