@@ -5,7 +5,7 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
-from audio_processing import transcribe_and_diarize_audio, whisper_transcription_model, whisper_diarization_model, AudioLine
+from audio_processing import transcribe_and_diarize_audio, AudioLine
 from typing import Any, List, Dict
 import asyncio
 import functools
@@ -311,14 +311,14 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     global diarization_semaphore
 
     audio_path = await download_audio(video_id, video_url)
-    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, whisper_transcription_model, whisper_diarization_model)
+    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id)
     if cached_diarized_transcript:
         diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
     else:
         async with diarization_semaphore:
             diarized_transcript = await transcribe_and_diarize_audio(audio_path, video_id)
         transcript_text = "\n".join([str(x) for x in diarized_transcript])
-        await transcript_db.cache_diarized_transcript(video_id, whisper_transcription_model, whisper_diarization_model, transcript_text)
+        await transcript_db.cache_diarized_transcript(video_id, transcript_text)
     diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
     
     print_debug(f'First 5 lines of diarized transcript for video {video_id}:')

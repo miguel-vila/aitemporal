@@ -66,7 +66,7 @@ class AudioLine:
         return f"[{self.speaker}] {self.text}"
 
 async def transcribe_and_diarize_audio(audio_path: str, video_id: str) -> List[AudioLine]:
-    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id, whisper_transcription_model, whisper_diarization_model)
+    cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id)
     if cached_diarized_transcript:
         print(f"Loading cached diarized transcript from database for model {whisper_transcription_model}")
         return AudioLine.from_str(cached_diarized_transcript)

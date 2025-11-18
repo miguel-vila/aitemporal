@@ -10,24 +10,7 @@ class VideoRecord(BaseModel):
     title: str
     url: str
     description: str
-    transcription_tiny: Optional[str] = None
-    transcription_base: Optional[str] = None
-    transcription_small: Optional[str] = None
-    transcription_medium: Optional[str] = None
-    transcription_large: Optional[str] = None
-    transcription_turbo: Optional[str] = None
-    diarized_transcript_tiny_2_1: Optional[str] = None
-    diarized_transcript_base_2_1: Optional[str] = None
-    diarized_transcript_small_2_1: Optional[str] = None
-    diarized_transcript_medium_2_1: Optional[str] = None
-    diarized_transcript_large_2_1: Optional[str] = None
-    diarized_transcript_turbo_2_1: Optional[str] = None
-    diarized_transcript_tiny_3_1: Optional[str] = None
-    diarized_transcript_base_3_1: Optional[str] = None
-    diarized_transcript_small_3_1: Optional[str] = None
-    diarized_transcript_medium_3_1: Optional[str] = None
-    diarized_transcript_large_3_1: Optional[str] = None
-    diarized_transcript_turbo_3_1: Optional[str] = None
+    diarized_transcript: Optional[str] = None
     processed: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -41,7 +24,7 @@ class TranscriptDB:
         """Initialize the database and create tables if they don't exist"""
         if self._initialized:
             return
-            
+
         async with aiosqlite.connect(self.db_path) as db:
             # Create videos table
             await db.execute("""
@@ -50,24 +33,7 @@ class TranscriptDB:
                     title TEXT NOT NULL,
                     url TEXT NOT NULL,
                     description TEXT,
-                    transcription_tiny TEXT,
-                    transcription_base TEXT,
-                    transcription_small TEXT,
-                    transcription_medium TEXT,
-                    transcription_large TEXT,
-                    transcription_turbo TEXT,
-                    diarized_transcript_tiny_2_1 TEXT,
-                    diarized_transcript_base_2_1 TEXT,
-                    diarized_transcript_small_2_1 TEXT,
-                    diarized_transcript_medium_2_1 TEXT,
-                    diarized_transcript_large_2_1 TEXT,
-                    diarized_transcript_turbo_2_1 TEXT,
-                    diarized_transcript_tiny_3_1 TEXT,
-                    diarized_transcript_base_3_1 TEXT,
-                    diarized_transcript_small_3_1 TEXT,
-                    diarized_transcript_medium_3_1 TEXT,
-                    diarized_transcript_large_3_1 TEXT,
-                    diarized_transcript_turbo_3_1 TEXT,
+                    diarized_transcript TEXT,
                     processed BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -106,15 +72,10 @@ class TranscriptDB:
     async def get_video(self, video_id: str) -> Optional[VideoRecord]:
         """Get a video record by ID"""
         await self.initialize()
-        
+
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """SELECT id, title, url, description, transcription_tiny, transcription_base,
-                   transcription_small, transcription_medium, transcription_large, transcription_turbo,
-                   diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
-                   diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
-                   diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
-                   diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
+                """SELECT id, title, url, description, diarized_transcript,
                    processed, created_at, updated_at FROM videos WHERE id = ?""",
                 (video_id,)
             )
@@ -126,68 +87,28 @@ class TranscriptDB:
                     title=row[1],
                     url=row[2],
                     description=row[3],
-                    transcription_tiny=row[4],
-                    transcription_base=row[5],
-                    transcription_small=row[6],
-                    transcription_medium=row[7],
-                    transcription_large=row[8],
-                    transcription_turbo=row[9],
-                    diarized_transcript_tiny_2_1=row[10],
-                    diarized_transcript_base_2_1=row[11],
-                    diarized_transcript_small_2_1=row[12],
-                    diarized_transcript_medium_2_1=row[13],
-                    diarized_transcript_large_2_1=row[14],
-                    diarized_transcript_turbo_2_1=row[15],
-                    diarized_transcript_tiny_3_1=row[16],
-                    diarized_transcript_base_3_1=row[17],
-                    diarized_transcript_small_3_1=row[18],
-                    diarized_transcript_medium_3_1=row[19],
-                    diarized_transcript_large_3_1=row[20],
-                    diarized_transcript_turbo_3_1=row[21],
-                    processed=bool(row[22]),
-                    created_at=row[23],
-                    updated_at=row[24]
+                    diarized_transcript=row[4],
+                    processed=bool(row[5]),
+                    created_at=row[6],
+                    updated_at=row[7]
                 )
             return None
     
     async def upsert_video(self, video_record: VideoRecord) -> None:
         """Insert or update a video record"""
         await self.initialize()
-        
+
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO videos
-                (id, title, url, description, transcription_tiny, transcription_base,
-                 transcription_small, transcription_medium, transcription_large, transcription_turbo,
-                 diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
-                 diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
-                 diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
-                 diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
-                 processed, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (id, title, url, description, diarized_transcript, processed, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """, (
                 video_record.id,
                 video_record.title,
                 video_record.url,
                 video_record.description,
-                video_record.transcription_tiny,
-                video_record.transcription_base,
-                video_record.transcription_small,
-                video_record.transcription_medium,
-                video_record.transcription_large,
-                video_record.transcription_turbo,
-                video_record.diarized_transcript_tiny_2_1,
-                video_record.diarized_transcript_base_2_1,
-                video_record.diarized_transcript_small_2_1,
-                video_record.diarized_transcript_medium_2_1,
-                video_record.diarized_transcript_large_2_1,
-                video_record.diarized_transcript_turbo_2_1,
-                video_record.diarized_transcript_tiny_3_1,
-                video_record.diarized_transcript_base_3_1,
-                video_record.diarized_transcript_small_3_1,
-                video_record.diarized_transcript_medium_3_1,
-                video_record.diarized_transcript_large_3_1,
-                video_record.diarized_transcript_turbo_3_1,
+                video_record.diarized_transcript,
                 video_record.processed
             ))
             await db.commit()
@@ -221,53 +142,38 @@ class TranscriptDB:
             await db.commit()
 
     async def get_transcription(self, video_id: str, transcription_model: str) -> Optional[str]:
-        """Get cached transcription for a specific Whisper model"""
-        await self.initialize()
-
-        column_name = f"transcription_{transcription_model}"
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                f"SELECT {column_name} FROM videos WHERE id = ?",
-                (video_id,)
-            )
-            row = await cursor.fetchone()
-            return row[0] if row and row[0] else None
+        """
+        DEPRECATED: Transcription columns have been removed from the schema.
+        This method now returns the diarized_transcript for backward compatibility.
+        """
+        return await self.get_diarized_transcript(video_id)
 
     async def cache_transcription(self, video_id: str, transcription_model: str, segments_json: str) -> None:
-        """Cache transcription segments for a specific Whisper transcription model"""
+        """
+        DEPRECATED: Transcription columns have been removed from the schema.
+        This method is a no-op for backward compatibility.
+        """
+        pass
+
+    async def get_diarized_transcript(self, video_id: str) -> Optional[str]:
+        """Get cached diarized transcript"""
         await self.initialize()
 
-        column_name = f"transcription_{transcription_model}"
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                f"UPDATE videos SET {column_name} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (segments_json, video_id)
-            )
-            await db.commit()
-
-    async def get_diarized_transcript(self, video_id: str, transcription_model: str, diarization_model: str) -> Optional[str]:
-        """Get cached diarized transcript for a specific Segments and Whisper model"""
-        await self.initialize()
-        diarization_model_str = diarization_model.replace('.', '_')
-
-        column_name = f"diarized_transcript_{transcription_model}_{diarization_model_str}"
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                f"SELECT {column_name} FROM videos WHERE id = ?",
+                "SELECT diarized_transcript FROM videos WHERE id = ?",
                 (video_id,)
             )
             row = await cursor.fetchone()
             return row[0] if row and row[0] else None
 
-    async def cache_diarized_transcript(self, video_id: str, transcription_model: str, diarization_model: str, diarized_text: str) -> None:
-        """Cache diarized transcript for a specific Whisper transcription_model"""
+    async def cache_diarized_transcript(self, video_id: str, diarized_text: str) -> None:
+        """Cache diarized transcript"""
         await self.initialize()
-        diarization_model_str = diarization_model.replace('.', '_')
 
-        column_name = f"diarized_transcript_{transcription_model}_{diarization_model_str}"
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                f"UPDATE videos SET {column_name} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE videos SET diarized_transcript = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (diarized_text, video_id)
             )
             await db.commit()
@@ -275,15 +181,10 @@ class TranscriptDB:
     async def get_unprocessed_videos(self) -> List[VideoRecord]:
         """Get all videos that haven't been processed yet"""
         await self.initialize()
-        
+
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                """SELECT id, title, url, description, transcription_tiny, transcription_base,
-                   transcription_small, transcription_medium, transcription_large, transcription_turbo,
-                   diarized_transcript_tiny_2_1, diarized_transcript_base_2_1, diarized_transcript_small_2_1,
-                   diarized_transcript_medium_2_1, diarized_transcript_large_2_1, diarized_transcript_turbo_2_1,
-                   diarized_transcript_tiny_3_1, diarized_transcript_base_3_1, diarized_transcript_small_3_1,
-                   diarized_transcript_medium_3_1, diarized_transcript_large_3_1, diarized_transcript_turbo_3_1,
+                """SELECT id, title, url, description, diarized_transcript,
                    processed, created_at, updated_at FROM videos WHERE processed = FALSE"""
             )
             rows = await cursor.fetchall()
@@ -294,27 +195,10 @@ class TranscriptDB:
                     title=row[1],
                     url=row[2],
                     description=row[3],
-                    transcription_tiny=row[4],
-                    transcription_base=row[5],
-                    transcription_small=row[6],
-                    transcription_medium=row[7],
-                    transcription_large=row[8],
-                    transcription_turbo=row[9],
-                    diarized_transcript_tiny_2_1=row[10],
-                    diarized_transcript_base_2_1=row[11],
-                    diarized_transcript_small_2_1=row[12],
-                    diarized_transcript_medium_2_1=row[13],
-                    diarized_transcript_large_2_1=row[14],
-                    diarized_transcript_turbo_2_1=row[15],
-                    diarized_transcript_tiny_3_1=row[16],
-                    diarized_transcript_base_3_1=row[17],
-                    diarized_transcript_small_3_1=row[18],
-                    diarized_transcript_medium_3_1=row[19],
-                    diarized_transcript_large_3_1=row[20],
-                    diarized_transcript_turbo_3_1=row[21],
-                    processed=bool(row[22]),
-                    created_at=row[23],
-                    updated_at=row[24]
+                    diarized_transcript=row[4],
+                    processed=bool(row[5]),
+                    created_at=row[6],
+                    updated_at=row[7]
                 )
                 for row in rows
             ]
@@ -356,30 +240,27 @@ class TranscriptDB:
     async def get_stats(self) -> Dict[str, int]:
         """Get database statistics"""
         await self.initialize()
-        
+
         async with aiosqlite.connect(self.db_path) as db:
             # Count total videos
             cursor = await db.execute("SELECT COUNT(*) FROM videos")
             total_videos = (await cursor.fetchone())[0]
-            
+
             # Count processed videos
             cursor = await db.execute("SELECT COUNT(*) FROM videos WHERE processed = TRUE")
             processed_videos = (await cursor.fetchone())[0]
-            
-            # Count videos with transcriptions
-            cursor = await db.execute("""SELECT COUNT(*) FROM videos WHERE
-                transcription_tiny IS NOT NULL OR transcription_base IS NOT NULL OR
-                transcription_small IS NOT NULL OR transcription_medium IS NOT NULL OR
-                transcription_large IS NOT NULL OR transcription_turbo IS NOT NULL""")
-            videos_with_transcriptions = (await cursor.fetchone())[0]
-            
+
+            # Count videos with diarized transcripts
+            cursor = await db.execute("SELECT COUNT(*) FROM videos WHERE diarized_transcript IS NOT NULL")
+            videos_with_diarized = (await cursor.fetchone())[0]
+
             # Count total chunks
             cursor = await db.execute("SELECT COUNT(*) FROM transcript_chunks")
             total_chunks = (await cursor.fetchone())[0]
-            
+
             return {
                 "total_videos": total_videos,
                 "processed_videos": processed_videos,
-                "videos_with_transcriptions": videos_with_transcriptions,
+                "videos_with_diarized_transcript": videos_with_diarized,
                 "total_chunks": total_chunks
             }
