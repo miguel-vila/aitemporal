@@ -1,7 +1,10 @@
-- store output from speech recognition and diarization in the table. Name the column including the model names used.
+- chunking:
+  - steps:
+    - condense audio lines by continuous speaker (we are loosing some start and end time accuracy here)
+    - flatMap over condensed lines to split into smaller chunks (max 200 words) and by punctuation
+  - https://chatgpt.com/share/68ec88dc-9b78-8001-9a03-14aca68f4658 
 - speaker identification:
   - heuristic: Andres is the one that introduces the speakers
+  - should use an audio with Andres voice as reference for the replicate model
   - if the heuristic fails, use embeddings: https://chatgpt.com/share/68cfcffd-ea90-8001-beb8-357c830c17ff
   - built streamlit app to manually label speakers in transcripts
-- chunking:
-  - https://chatgpt.com/share/68ec88dc-9b78-8001-9a03-14aca68f4658 

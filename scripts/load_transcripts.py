@@ -6,7 +6,8 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
-from audio_processing import AudioLineEncoder, transcribe_and_diarize_audio, AudioLine
+from audio_processing import transcribe_and_diarize_audio
+from audio_models import AudioLine, AudioLineEncoder
 from typing import Any, List, Dict
 import asyncio
 import functools
@@ -360,10 +361,11 @@ async def get_diarized_transcript(video_id: str, video_url: str, interviewer_nam
     with open(f'diarized_{video_id}_condensed.json', 'w') as f:
         json.dump([line.model_dump() for line in diarized_transcript], f, cls=AudioLineEncoder, indent=2, ensure_ascii=False)
     diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
-    
-    print_debug(f'First 5 lines of diarized transcript for video {video_id}:')
-    for audio_line in diarized_transcript[:5]:
-        print_debug(f'{audio_line}')
+    with open(f'diarized_{video_id}_mapped.json', 'w') as f:
+        json.dump([line.model_dump() for line in diarized_transcript], f, cls=AudioLineEncoder, indent=2, ensure_ascii=False)
+    # print_debug(f'First 5 lines of diarized transcript for video {video_id}:')
+    # for audio_line in diarized_transcript[:5]:
+    #     print_debug(f'{audio_line}')
     
     transcript_text = "\n".join([str(x) for x in diarized_transcript])
     return transcript_text
