@@ -1,3 +1,4 @@
+import json
 import yt_dlp
 from pydantic import BaseModel
 import os
@@ -5,7 +6,7 @@ from pinecone import PineconeAsyncio
 from pinecone.db_data import IndexAsyncio
 from sentence_transformers import SentenceTransformer
 import torch
-from audio_processing import transcribe_and_diarize_audio, AudioLine
+from audio_processing import AudioLineEncoder, transcribe_and_diarize_audio, AudioLine
 from typing import Any, List, Dict
 import asyncio
 import functools
@@ -243,7 +244,6 @@ def wrap_video_with_embedding(i: int, chunk_text: str, embedding: List[float], v
     )
 
 transcript_fetch_semaphore = asyncio.Semaphore(2)
-diarization_semaphore = asyncio.Semaphore(1)  # Limit diarization to 1 concurrent process
 
 async def download_audio(video_id: str, video_url: str) -> str:
     """Download audio from YouTube video and cache it locally"""
@@ -306,19 +306,59 @@ async def download_audio(video_id: str, video_url: str) -> str:
         raise
     return audio_path
 
-async def get_diarized_transcript(video_id: str, video_url: str, interviewer_name: str, interviewee_name: str, cached_video: VideoRecord | None) -> str:
-    """Get diarized transcript using Whisper + pyannote.audio"""
-    global diarization_semaphore
+def condense_replicate_diarization(output: List[AudioLine]) -> List[AudioLine]:
+    first_segment = output[0] # type: ignore
+    last_speaker: str = first_segment.speaker # type: ignore
+    buffer: list[AudioLine] = [AudioLine(speaker=first_segment.speaker, text=first_segment.text, start=first_segment.start, end=first_segment.end)] # type: ignore
+    segments_output: list[AudioLine] = []
 
+    for segment in output[1:]: # type: ignore
+        speaker: str = segment.speaker
+        text: str = segment.text
+        if speaker != last_speaker:
+            # close current buffer
+            if buffer:
+                combined_text = ' '.join(s.text for s in buffer)
+                segments_output.append(
+                    AudioLine(
+                        speaker=last_speaker,
+                        text=combined_text,
+                        start=buffer[0].start,
+                        end=buffer[-1].end
+                    )
+                )
+                buffer = [
+                    AudioLine(speaker=speaker, text=text, start=segment.start, end=segment.end)
+                ]
+            else:
+                pass
+        else:
+            buffer.append(AudioLine(speaker=speaker, text=text, start=segment.start, end=segment.end))
+        last_speaker = speaker
+    # flush buffer
+    if buffer:
+        combined_text = ' '.join(s.text for s in buffer)
+        segments_output.append(AudioLine(
+            speaker=last_speaker,
+            text=combined_text,
+            start=buffer[0].start,
+            end=buffer[-1].end
+        ))
+    return segments_output
+
+async def get_diarized_transcript(video_id: str, video_url: str, interviewer_name: str, interviewee_name: str) -> str:
+    """Get diarized transcript using Whisper + pyannote.audio"""
     audio_path = await download_audio(video_id, video_url)
     cached_diarized_transcript = await transcript_db.get_diarized_transcript(video_id)
     if cached_diarized_transcript:
-        diarized_transcript = AudioLine.from_str(cached_diarized_transcript)
+        diarized_transcript_base = AudioLine.from_db(cached_diarized_transcript)
     else:
-        async with diarization_semaphore:
-            diarized_transcript = await transcribe_and_diarize_audio(audio_path, video_id)
-        transcript_text = "\n".join([str(x) for x in diarized_transcript])
-        await transcript_db.cache_diarized_transcript(video_id, transcript_text)
+        diarized_transcript_base = await transcribe_and_diarize_audio(audio_path, video_id)
+    diarized_transcript = condense_replicate_diarization(diarized_transcript_base)
+    with open(f'diarized_{video_id}.json', 'w') as f:
+        json.dump([line.model_dump() for line in diarized_transcript_base], f, cls=AudioLineEncoder, indent=2, ensure_ascii=False)
+    with open(f'diarized_{video_id}_condensed.json', 'w') as f:
+        json.dump([line.model_dump() for line in diarized_transcript], f, cls=AudioLineEncoder, indent=2, ensure_ascii=False)
     diarized_transcript = map_speakers(video_id, diarized_transcript, interviewer_name, interviewee_name)
     
     print_debug(f'First 5 lines of diarized transcript for video {video_id}:')
@@ -342,9 +382,9 @@ def map_speakers(video_id: str, audio_lines: List[AudioLine], interviewer_name: 
     mapped_lines: List[AudioLine] = []
     for line in audio_lines:
         if line.speaker == interviewer_speaker:
-            mapped_lines.append(AudioLine(interviewer_name, line.text))
+            mapped_lines.append(AudioLine(speaker=interviewer_name, text=line.text, start=line.start, end=line.end))
         else:
-            mapped_lines.append(AudioLine(interviewee_name, line.text))
+            mapped_lines.append(AudioLine(speaker=interviewee_name, text=line.text, start=line.start, end=line.end))
     # Sanity check: ensure both speakers are present
     speakers = set(line.speaker for line in mapped_lines)
     print(f'speakers found after mapping: {speakers}')
@@ -379,7 +419,7 @@ async def process_video(video: Video, model: SentenceTransformer, index: IndexAs
     interviewer_name = "Andrés Acevedo"
     interviewee_name = recognized_names[0]
 
-    transcript_text = await get_diarized_transcript(video.id, video.url, interviewer_name, interviewee_name, cached_video)
+    transcript_text = await get_diarized_transcript(video.id, video.url, interviewer_name, interviewee_name)
     print(transcript_text)
             
     chunks = chunk_diarized_text(transcript_text)
